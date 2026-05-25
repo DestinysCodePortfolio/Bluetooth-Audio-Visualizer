@@ -19,7 +19,7 @@ The system aims to replicate the feel of a standalone audio visualizer device si
 
 | Component | Part | Description |
 |-----------|------|-------------|
-| **Microcontroller** | Raspberry Pi Pico 2W | Used as the Bluetooth A2DP audio sink, SBC decoder, PWM audio output engine, and SPI master for streaming PCM samples to the FPGA. |
+| **Microcontroller** | Raspberry Pi Pico 2W | Used as the Bluetooth A2DP audio sink, SBC decoder, PWM audio output engine, and SPI primary for streaming PCM samples to the FPGA. |
 | **FPGA** | IceSugar-Pro FPGA | Performs frequency analysis and drives the RGB LCD display. Implements spectrum bar renderer, beat detection logic, and full LCD timing controller in Verilog. |
 | **Display** | 4.3" 480×272 RGB LCD with PMOD RGBLCD Expansion Board | Displays the live audio visualization. Driven directly by the FPGA via a parallel RGB interface with HSYNC/VSYNC timing generated in Verilog. |
 | **Amplifier** | PAM8403 Stereo Amplifier Module | Receives PWM output from the Pico and drives the speaker at sufficient power for audible playback. |
@@ -38,7 +38,7 @@ The system aims to replicate the feel of a standalone audio visualizer device si
 - Timed interrupt callback for volume control (event-driven)
 
 ### FPGA (IceSugar-Pro — Verilog)
-- Custom SPI slave receiver module
+- Custom SPI secondary receiver module
 - FAT32 WAV file reader
 - Fixed-point radix-2 FFT with Hann windowing
 - 32-band spectrum renderer with dynamic color mapping
