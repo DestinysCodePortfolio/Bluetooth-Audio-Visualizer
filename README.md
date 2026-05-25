@@ -1,81 +1,100 @@
-# icesugar-pro-framebuffer
+# iCESugar-Pro Framebuffer with LVGL
 
-Framebuffer that uses the Icesugar pro SDRAM and displays a simple pattern
+A display framebuffer implementation that utilizes the onboard SDRAM of the iCESugar-Pro FPGA to display a simple LVGL (Light and Versatile Graphics Library) application driven by an external microcontroller.
 
 ## Instructions
 
-As promised, here are directions on how to synthesize and use the project in this repo.
+This repository contains the complete FPGA hardware design and a sample LVGL application. Follow the directions below to synthesize the bitstream for the FPGA and compile the software for a Raspberry Pi Pico.
 
-### Requirements for Synthesizing
+### Requirements for FPGA Synthesis
 
-This project requires Yosys and Nextpnr. Both of these tools are available as part of the 
-[OSS CAD-SUITE](https://github.com/YosysHQ/oss-cad-suite-build?tab=readme-ov-file#installation). 
-Once those tools are installed, you should be able to synthesize this project.
+This project requires **Yosys** and **nextpnr-ecp5**. Both of these tools, alongside the required ECP5 database (`prjtrellis`), are available pre-compiled as part of the [OSS CAD-SUITE](https://github.com/YosysHQ/oss-cad-suite-build). 
 
-If you are on Ubuntu, these tools are available through the following apt package:
-1. Yosys - fpga-icestorm
-2. Nextpnr - nextpnr-ice40
+> [!WARNING]
+> If you are on Ubuntu/Debian, do **not** install `nextpnr-ice40` or `fpga-icestorm` via `apt`. The iCESugar-Pro features a Lattice **ECP5** FPGA, which requires `nextpnr-ecp5`. It is highly recommended to use the OSS CAD-Suite linked above to ensure you have the correct, up-to-date tools.
 
-### Synthesizing
+### Requirements for Microcontroller Compilation
 
-The following command will synthesize the bitstream for this project:
+To compile the application for the Raspberry Pi Pico, you need the `arm-none-eabi` GCC toolchain. Refer to the official Arm page for installation instructions tailored to Windows, macOS, and Linux:
+
+[Arm GNU Toolchain Downloads](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads)
+
+#### Using the Bundled Docker Environment
+Alternatively, a `Dockerfile` is provided in this project to generate a unified container capable of handling both FPGA synthesis and software compilation. 
+
+To build the Docker image, run:
+```bash
+docker build . --tag cs122a-build-env
+
+```
+
+To run the container while mounting your current project directory workspace, execute:
 
 ```bash
-make clean && make
+docker run -it -v ./:/myprojects cs122a-build-env /bin/bash
+
 ```
 
-The first `make clean` is not necessary always, but is a good idea to make sure your code changes
-always get synthesized.
+### Building the Project
 
-### Programming the Icesugar Pro with the Bitstream
+Before compiling, you must fetch the required LVGL submodule dependency. Navigate to the software directory and initialize it:
 
-Once you've synthesized the code you can program the Icesugar Pro device using the file system. Using
-the file browser drag and drop top.bin to the drive named iCELink. 
+```bash
+git submodule update --init --recursive
 
-### What you should see
-
-If all went well you should see a series of blue and green vertical stripes, each of which is 16-pixels wide.
-Those pixels where written to the SDRAM just after the device powers up. 
-
-## Using this code in your custom project
-
-To use this code in your custom project to display, for example, framebuffers from LVGL, add code that replaces
-the code in `top.v` that writes the stripes to memory. This code looks like the following: 
-
-```verilog
-    reg [23:0] pixel_addr = 24'h00000;
-    integer clk_count = 0;
-
-    always @(posedge clk_25m) begin
-        if (clk_count < 10000) begin
-            clk_count <= clk_count + 1;
-        end else
-        if (pixel_addr <= 24'h01FFFF) begin
-            wr_addr <= pixel_addr;
-            wr_data <= pixel_addr[4] ? 16'h07E0 : 16'h001F;
-            wr_en <= 1;
-            pixel_addr <= pixel_addr + 1;
-        end else begin
-            wr_en <= 0;
-        end
 ```
 
-The relavent ports are `wr_en`, `wr_addr` and `wr_data`. The following table summarizes these ports:
+Once the submodules are fully downloaded, return to the project root directory and initialize the CMake build system:
 
-| Name    | Size    | Direction | Description                                                    |
-|---------|--------:|:---------:|----------------------------------------------------------------|
-| wr_en   | 1-bit   | input     | Requests data in `wr_data` be written to address in `wr_addr`. |
-| wr_addr | 23-bits | input     | Address of data in `wr_data` is written when `wr_en` is 1.     |
-| wr_data | 16-bits | input     | The data to be written to `wr_address` when `wr_en` is 1.      |
+```bash
+mkdir build
+cmake -B build -S .
 
-You can replace that code above with your code that receives commands and data over SPI from the Raspberry Pi Pico
-micro controller. It's similar to what you did in the Sprite lab, but now instead of 256 bytes, you are writing 
-rectangles to the framebuffer using the above ports. 
+```
 
-## Questions?
+To compile both the FPGA bitstream and the microcontroller executable simultaneously, run:
 
-Email me, allan.knight@ucr.edu, or DM me on Slack if you have questions. RM and Marios maybe able to answer questions
-about this code, but I wrote it and have a good understanding of how it works.
+```bash
+cmake --build build
+
+```
+
+### Programming the Hardware
+
+Once the build system completes, the resulting binaries can be found in their respective build subdirectories:
+
+* **Raspberry Pi Pico:** The executable binary is located at `build/sw/cs122_demo.uf2`. Flash this to your Pico by holding the `BOOTSEL` button while plugging it in.
+* **iCESugar-Pro FPGA:** The hardware bitstream is located at `build/hw/top.bit`.
+
+### Expected Output
+
+If all components are compiled and wired correctly, you should see an active digital clock ticking on the RGB LCD panel.
+
+## Using this Code in Your Custom Project
+
+To adapt this codebase for a custom UI project, replace or modify the files inside the `sw/` directory with your own LVGL layout code.
+
+The entry point in `main.cpp` sets up the foundational hardware rendering loop and system timers. Specifically:
+
+* `cs122_flush_cb_partial`: Handles chunking and pushing framebuffer updates across the SPI bus to the FPGA.
+* `cs122_get_millis`: Handles the internal system time tick requirements for LVGL animations and tasks.
+
+*Note: This release does not yet support the display's integrated touch screen controller.*
+
+## Hardware Signal Integrity & Grounding
+
+If the LCD panel displays a scrambled, unstable, or tearing image, ensure that you have established a **clean, solid common ground connection** between one of the `GND` pins on the Raspberry Pi Pico and a `GND` pin on the iCESugar-Pro.
+
+For reliable high-speed operation (SPI clocks above 10 MHz), it is highly recommended to run a ground wire physically paired/twisted alongside your `SCLK` wire to minimize loop inductance and clock edge ringing.
+
+## Questions & Support
+
+If you encounter issues or have questions regarding the timing blocks or SPI interfaces:
+
+* **Email:** allan.knight@ucr.edu
+* **Slack:** Send a DM directly to Allan Knight.
+
+The course TAs/readers may be able to assist with general deployment questions, but as the author of this framework, contacting me directly is the fastest path to resolving hardware-specific bugs.
 
 
-**Note:** I will add more directions on 5/13/2026
+**Future Outlook:** Support for the touch screen overlay will be introduced in an upcoming release.

@@ -1,6 +1,6 @@
 
 #include "spi_display.h"
-#include "lvgl_heart_rate.h"
+#include "lvgl_clock.h"
 #include "lv_conf.h"
 
 #include <lvgl.h>
@@ -61,6 +61,6 @@ int main(void) {
 	spi_display.begin();
 	spi_display.clear();
 
-    ucr::bcoe::cs::cs122::LVGL_HeartRate app(&spi_display, cs122_flush_cb_partial, cs122_get_millis);
+    ucr::bcoe::cs::cs122::LVGL_Clock app(&spi_display, cs122_flush_cb_partial, cs122_get_millis);
     app.run();
 }
