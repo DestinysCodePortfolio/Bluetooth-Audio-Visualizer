@@ -9,7 +9,7 @@ module async_fifo #(
     // Write Domain (100 MHz System Clock)
     // --------------------------------------------------------
     input  wire                  wr_clk,
-    input  wire                  rst,      
+    input  wire                  wr_rst,      // Separate Write Reset
     input  wire                  wr_en,
     input  wire [DATA_WIDTH-1:0] din,
     output wire                  full,
@@ -18,6 +18,7 @@ module async_fifo #(
     // Read Domain (9 MHz Pixel Clock)
     // --------------------------------------------------------
     input  wire                  rd_clk,
+    input  wire                  rd_rst,      // Separate Read Reset
     input  wire                  rd_en,
     output reg  [DATA_WIDTH-1:0] dout,
     output wire                  empty,
@@ -28,7 +29,7 @@ module async_fifo #(
     localparam DEPTH = 1 << ADDR_WIDTH;
     reg [DATA_WIDTH-1:0] mem [0:DEPTH-1];
 
-    // Pointers (Need extra bit for Full/Empty wrapping logic)
+    // Pointers
     reg [ADDR_WIDTH:0] wr_ptr_bin, wr_ptr_gray;
     reg [ADDR_WIDTH:0] rd_ptr_bin, rd_ptr_gray;
 
@@ -44,8 +45,8 @@ module async_fifo #(
     
     wire wr_successful = wr_en && !full;
 
-    always @(posedge wr_clk or posedge rst) begin
-        if (rst) begin
+    always @(posedge wr_clk or posedge wr_rst) begin
+        if (wr_rst) begin
             wr_ptr_bin  <= 0;
             wr_ptr_gray <= 0;
         end else if (wr_successful) begin
@@ -54,16 +55,14 @@ module async_fifo #(
         end
     end
 
-    // Write to dual-port memory
     always @(posedge wr_clk) begin
         if (wr_successful) begin
             mem[wr_ptr_bin[ADDR_WIDTH-1:0]] <= din;
         end
     end
 
-    // Synchronize Read Pointer into Write Domain (to calculate 'full')
-    always @(posedge wr_clk or posedge rst) begin
-        if (rst) begin
+    always @(posedge wr_clk or posedge wr_rst) begin
+        if (wr_rst) begin
             rd_ptr_gray_sync1 <= 0;
             rd_ptr_gray_sync2 <= 0;
         end else begin
@@ -72,7 +71,6 @@ module async_fifo #(
         end
     end
 
-    // Full condition: Pointers match, but top two bits are inverted (wrap-around)
     assign full = (wr_ptr_gray == {~rd_ptr_gray_sync2[ADDR_WIDTH:ADDR_WIDTH-1], 
                                     rd_ptr_gray_sync2[ADDR_WIDTH-2:0]});
 
@@ -84,8 +82,8 @@ module async_fifo #(
     
     wire rd_successful = rd_en && !empty;
 
-    always @(posedge rd_clk or posedge rst) begin
-        if (rst) begin
+    always @(posedge rd_clk or posedge rd_rst) begin
+        if (rd_rst) begin
             rd_ptr_bin  <= 0;
             rd_ptr_gray <= 0;
         end else if (rd_successful) begin
@@ -94,16 +92,14 @@ module async_fifo #(
         end
     end
 
-    // Read from dual-port memory
     always @(posedge rd_clk) begin
         if (rd_successful) begin
             dout <= mem[rd_ptr_bin[ADDR_WIDTH-1:0]];
         end
     end
 
-    // Synchronize Write Pointer into Read Domain (to calculate 'empty' and 'almost_empty')
-    always @(posedge rd_clk or posedge rst) begin
-        if (rst) begin
+    always @(posedge rd_clk or posedge rd_rst) begin
+        if (rd_rst) begin
             wr_ptr_gray_sync1 <= 0;
             wr_ptr_gray_sync2 <= 0;
         end else begin
@@ -112,16 +108,14 @@ module async_fifo #(
         end
     end
 
-    // Empty condition: Read pointer catches up to synchronized write pointer
     assign empty = (rd_ptr_gray == wr_ptr_gray_sync2);
 
     // ------------------------------------------------------------------------
-    // ALMOST EMPTY FLAG (SDRAM Arbiter Trigger)
+    // ALMOST EMPTY FLAG
     // ------------------------------------------------------------------------
     reg [ADDR_WIDTH:0] wr_ptr_bin_synced;
     integer i;
     
-    // Convert Gray -> Binary in Read Domain to count available words
     always @(*) begin
         wr_ptr_bin_synced[ADDR_WIDTH] = wr_ptr_gray_sync2[ADDR_WIDTH];
         for (i = ADDR_WIDTH-1; i >= 0; i = i - 1) begin
@@ -130,7 +124,6 @@ module async_fifo #(
     end
 
     wire [ADDR_WIDTH:0] words_in_fifo = wr_ptr_bin_synced - rd_ptr_bin;
-    
     assign almost_empty = (words_in_fifo <= ALMOST_EMPTY_THRESH);
 
 endmodule

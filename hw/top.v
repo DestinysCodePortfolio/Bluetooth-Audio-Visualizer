@@ -26,9 +26,9 @@ module top (
     output wire        lcd_hsync,
     output wire        lcd_vsync,
     output wire        lcd_de,
-    output wire [4:0]  lcd_r,
-    output wire [5:0]  lcd_g,
-    output wire [4:0]  lcd_b,
+    output wire [7:0]  lcd_r,
+    output wire [7:0]  lcd_g,
+    output wire [7:0]  lcd_b,
 
     // SPI Peripheral for Display Commands from MCU
     input wire         sclk,
@@ -36,13 +36,13 @@ module top (
     input wire         cs_n,
     input wire         data_cmd,
 
-    output wire [4:0]  dbg
+    output wire [7:0]  dbg
 );
 
     reg        wr_en = 0;
     wire       wr_ack;
     reg [23:0] wr_addr = 24'h000000;       
-    reg  [15:0] wr_data = 16'h0000;
+    reg [15:0] wr_data = 16'h0000;
 
     icesugar_pro_lcd_fb fb_inst (
         .clk_25m(clk_25m),
@@ -62,16 +62,25 @@ module top (
         .lcd_hsync(lcd_hsync),
         .lcd_vsync(lcd_vsync),
         .lcd_de(lcd_de),
-        .lcd_r(lcd_r),
-        .lcd_g(lcd_g),
-        .lcd_b(lcd_b),
+        .lcd_r(lcd_r[7:3]),
+        .lcd_g(lcd_g[7:2]),
+        .lcd_b(lcd_b[7:3]),
         
         .wr_en(wr_en),
         .wr_addr(wr_addr),
         .wr_data(wr_data),
-        .wr_ack(wr_ack)
+        .wr_ack(wr_ack),
+        .clk_100m(clk_100m),
+        .locked(locked)
     );
 
+    assign lcd_r[0:2] = {3{lcd_r[3]}};
+    assign lcd_g[0:1] = {2{lcd_g[2]}};
+    assign lcd_b[0:2] = {3{lcd_b[3]}};
+
+    wire locked;
+    wire reset = ~locked;
+    wire clk_100m;
     wire [7:0]  pixel_half;
     wire [23:0] pixel_addr;
     wire        pixel_wr_en;
@@ -88,39 +97,42 @@ module top (
         .framebuffer_wren(pixel_wr_en)
     );
 
-    assign dbg = {pixel_addr[0], pixel_wr_en, wr_en, wr_ack};
+    assign dbg = {data_cmd, pico, sclk, cs_n};
 
     integer clock_count = 0;
-    reg reset = 1;
+    wire reset;
+    reg pixel_wr_en_1 = 0, pixel_wr_en_2 = 0, pixel_wr_en_3;
+    wire pixel_wr_en_edge = pixel_wr_en_2 && !pixel_wr_en_3;
 
-    always @(posedge clk_25m) begin
-        if (clock_count < 10000) begin
-            clock_count <= clock_count + 1;
-            reset <= 1;
-        end else reset <= 0;
+    always @(posedge clk_100m) begin
+        if (~reset) begin
+            pixel_wr_en_1 <= pixel_wr_en;
+            pixel_wr_en_2 <= pixel_wr_en_1;
+            pixel_wr_en_3 <= pixel_wr_en_2;
 
-        wr_en <= wr_en && !wr_ack;
-        if (pixel_wr_en) begin
-            if (~pixel_addr[0]) begin
-                wr_data[15:8] <= pixel_half;
-            end else begin
-                wr_data[7:0] <= pixel_half;
-                wr_addr <= pixel_addr >> 1;
-                wr_en <= 1;
+            wr_en <= wr_en & ~wr_ack;
+            if (pixel_wr_en) begin
+                if (~pixel_addr[0]) begin
+                    wr_data[7:0] <= pixel_half;
+                end else begin
+                    wr_data[15:8] <= pixel_half;
+                    wr_addr <= {0, pixel_addr[22:1]};
+                    wr_en <= 1;
+                end 
             end 
         end
     end
 
+    // integer clk_count = 0;
     // always @(posedge clk_25m) begin
-    //     if (clk_count < 10000) begin
-    //         clk_count <= clk_count + 1;
-    //     end else
-    //     if (wr_addr <= 24'h01FE00) begin
-    //         wr_data <= wr_addr[4] ? 16'hF800 : 16'h001F;
-    //         wr_en <= 1;
-    //         if (wr_ack) wr_addr <= wr_addr + 1;
-    //     end else begin
-    //         wr_en <= 0;
+    //     if (~reset) begin
+    //         if (wr_addr <= 24'h01FE00) begin
+    //             wr_data <= wr_addr[4] ? 16'hF800 : 16'h001F;
+    //             wr_en <= 1;
+    //             if (wr_ack) wr_addr <= wr_addr + 1;
+    //         end else begin
+    //             wr_en <= 0;
+    //         end
     //     end
     // end
 

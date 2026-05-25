@@ -30,13 +30,17 @@ module icesugar_pro_lcd_fb (
     input  wire [23:0] wr_addr,       
     input  wire [15:0] wr_data,
     output wire        wr_ack,
+    output  wire       clk_100m,
+    output wire        locked
 );
 
     wire clk_sys;     // 100 MHz for SDRAM
     wire clk_pixel;   // 9 MHz for LCD
-    wire locked;
+    //wire locked;
     wire rst = ~locked; 
-
+    
+    assign clk_100m = clk_sys;
+    
     // --------------------------------------------------------
     // 1. Clocks
     // --------------------------------------------------------
@@ -105,10 +109,12 @@ module icesugar_pro_lcd_fb (
         .ALMOST_EMPTY_THRESH(64)   // Request data early to prevent underflow
     ) video_fifo (
         .wr_clk(clk_sys),
-        .rd_clk(clk_pixel),
-        .rst(rst),
+        .wr_rst(rst || new_frame_sys_2),
         .wr_en(rd_data_valid),
         .din(rd_data),
+
+        .rd_clk(clk_pixel),
+        .rd_rst(rst || new_frame),
         .rd_en(lcd_de),            // Pop a pixel from FIFO only when actively drawing
         .dout(pixel_data),
         .empty(),                  // Ignored, visually manifests as black screen if it occurs

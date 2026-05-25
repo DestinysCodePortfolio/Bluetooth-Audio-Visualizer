@@ -121,7 +121,7 @@ module display_controller #(
         input [7:0] p
     );
         begin
-            framebuffer_addr_out <= x + (y * DISPLAY_WIDTH);
+            framebuffer_addr_out <= x + ({8'b0, y} << 10) - ({8'b0, y} << 6);
             framebuffer_data_out <= p;
         end
     endtask
@@ -140,11 +140,6 @@ module display_controller #(
         end
     endtask
 
-    reg sclk_1 = 0;
-    reg sclk_2 = 0;
-    wire sclk_rising_edge;
-    assign sclk_rising_edge = sclk_1 & ~sclk_2;
-
     always @(posedge clk) begin
         if (reset) begin
             busy <= 0;
@@ -153,9 +148,6 @@ module display_controller #(
             cmd_data_index <= 0;
             state <= INIT;
         end else begin
-            sclk_1 <= disp_SCLK;
-            sclk_2 <= sclk_1;
-
             case (state)
                 INIT: begin
                     INIT_SPI();
@@ -164,7 +156,7 @@ module display_controller #(
                 CMD_WAIT: begin
                     if (data_cmd == 1) begin
                         state <= DATA_WAIT;
-                    end else if (sclk_rising_edge && disp_data_ready) begin
+                    end else if (disp_data_ready) begin
                         curr_cmd <= data;
                         case (data)
                             `CMD_CLEARWINDOW       : cmd_data_count <= 8;
@@ -187,7 +179,7 @@ module display_controller #(
                         cmd_data_index <= 0;
                         busy <= 1;
                         state <= data_cmd == 1 ? DATA_WAIT : EXEC_CMD;
-                    end else if (sclk_rising_edge && disp_data_ready) begin 
+                    end else if (disp_data_ready) begin 
                         cmd_data[cmd_data_index] <= data;
                         cmd_data_index <= cmd_data_index + 1;
                     end
@@ -200,7 +192,7 @@ module display_controller #(
                 DATA_WAIT: begin
                     busy <= 1;
                     framebuffer_wren <= 0;
-                    if (sclk_rising_edge && disp_data_ready && data_cmd == 1) begin
+                    if (disp_data_ready && data_cmd == 1) begin
                         framebuffer_wren <= 1;
                         UPDATE_PIXEL(data);
                     end else if (~data_cmd) begin
@@ -211,6 +203,7 @@ module display_controller #(
             if (busy) begin
                 case(curr_cmd)
                     `CMD_CLEARWINDOW: begin
+                        framebuffer_wren <= 0;
                         if (~cmd_data_set) begin
                             start_col_index <= {cmd_data[START_COL_INDEX_HB],cmd_data[START_COL_INDEX_LB]};
                             start_row_index <= {cmd_data[START_ROW_INDEX_HB],cmd_data[START_ROW_INDEX_LB]};
@@ -221,8 +214,8 @@ module display_controller #(
                             if (window_y > finish_row_index - start_row_index) begin
                                 INIT_SPI();
                             end else begin
-                                framebuffer_wren <= 1;
-                                UPDATE_PIXEL(8'h00);
+                                //framebuffer_wren <= 1;
+                                //UPDATE_PIXEL(8'h00);
                             end
                         end
                     end

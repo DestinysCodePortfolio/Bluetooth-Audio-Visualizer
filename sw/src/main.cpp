@@ -45,7 +45,7 @@ void cs122_flush_cb_partial(lv_display_t * disp, const lv_area_t * area, uint8_t
 
     /*Show the rendered image on the display*/
     ucr::bcoe::SPIDisplay *spi_display = reinterpret_cast<ucr::bcoe::SPIDisplay *>(lv_display_get_user_data(disp));
-    spi_display->drawBitmap(2 * area->x1, area->y1, 2 * area->x2, area->y2, px_buf);
+    spi_display->drawBitmap(2 * area->x1, area->y1, 2 * area->x2+1, area->y2, px_buf);
 
     /*Indicate that the buffer is available.
      *If DMA were used, call in the DMA complete interrupt*/
@@ -57,7 +57,7 @@ int main(void) {
 	stdio_init_all();
 	cyw43_arch_init();
 
-    ucr::bcoe::SPIDisplay spi_display(480, 272, 8000000, 20);
+    ucr::bcoe::SPIDisplay spi_display(480, 272, 5000000, 20);
 	spi_display.begin();
 	spi_display.clear();
 
