@@ -101,15 +101,9 @@ module top (
 
     integer clock_count = 0;
     wire reset;
-    reg pixel_wr_en_1 = 0, pixel_wr_en_2 = 0, pixel_wr_en_3;
-    wire pixel_wr_en_edge = pixel_wr_en_2 && !pixel_wr_en_3;
 
     always @(posedge clk_100m) begin
         if (~reset) begin
-            pixel_wr_en_1 <= pixel_wr_en;
-            pixel_wr_en_2 <= pixel_wr_en_1;
-            pixel_wr_en_3 <= pixel_wr_en_2;
-
             wr_en <= wr_en & ~wr_ack;
             if (pixel_wr_en) begin
                 if (~pixel_addr[0]) begin
