@@ -18,7 +18,6 @@ static avdtp_stream_endpoint_t * local_stream_endpoint;
 static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size) {
     UNUSED(channel); UNUSED(size);
     if (packet_type != HCI_EVENT_PACKET) return;
-
     uint8_t event = hci_event_packet_get_type(packet);
     switch (event) {
         case BTSTACK_EVENT_STATE:
@@ -45,22 +44,6 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
         case HCI_EVENT_SIMPLE_PAIRING_COMPLETE:
             printf("Simple pairing complete, status: %d\n", hci_event_simple_pairing_complete_get_status(packet));
             break;
-        case SM_EVENT_PAIRING_STARTED: {
-            bd_addr_t address;
-            sm_event_pairing_started_get_address(packet, address);
-            printf("SM pairing started for %02x:%02x:%02x:%02x:%02x:%02x\n",
-                   address[0], address[1], address[2], address[3], address[4], address[5]);
-            break;
-        }
-        case SM_EVENT_PAIRING_COMPLETE: {
-            bd_addr_t address;
-            sm_event_pairing_complete_get_address(packet, address);
-            printf("SM pairing complete status=%u reason=0x%02x for %02x:%02x:%02x:%02x:%02x:%02x\n",
-                   sm_event_pairing_complete_get_status(packet),
-                   sm_event_pairing_complete_get_reason(packet),
-                   address[0], address[1], address[2], address[3], address[4], address[5]);
-            break;
-        }
         case HCI_EVENT_CONNECTION_REQUEST:
             printf("Connection request incoming\n");
             break;
@@ -81,7 +64,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
 
 int main(void) {
     stdio_init_all();
-    sleep_ms(2000);
+    sleep_ms(10000);
     printf("\n=== BTVisualizer ===\n");
 
     if (cyw43_arch_init()) {
@@ -100,7 +83,6 @@ int main(void) {
     a2dp_sink_init();
     a2dp_sink_register_packet_handler(&packet_handler);
 
-    // Register SBC stream endpoint - this is what was missing
     local_stream_endpoint = a2dp_sink_create_stream_endpoint(
         AVDTP_AUDIO, AVDTP_CODEC_SBC,
         media_sbc_codec_capabilities, sizeof(media_sbc_codec_capabilities),
@@ -122,13 +104,12 @@ int main(void) {
     sdp_register_service(sdp_avrcp_buffer);
 
     gap_set_local_name("BTVisualizer");
-    gap_set_class_of_device(0x200428);  // Audio - Hands-free/Headphones combo
-    gap_set_default_link_policy_settings(LM_LINK_POLICY_ENABLE_SNIFF_MODE | LM_LINK_POLICY_ENABLE_ROLE_SWITCH);
+    gap_set_class_of_device(0x240414);
 
     hci_event_cb.callback = &packet_handler;
     hci_add_event_handler(&hci_event_cb);
 
     hci_power_control(HCI_POWER_ON);
-    while(1) { printf("heartbeat\n"); sleep_ms(2000); btstack_run_loop_execute(); }
+    btstack_run_loop_execute();
     return 0;
 }
