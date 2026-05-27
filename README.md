@@ -68,7 +68,7 @@ Once the build system completes, the resulting binaries can be found in their re
 
 ### Expected Output
 
-If all components are compiled and wired correctly, you should see an active digital clock ticking on the RGB LCD panel.
+If all components are compiled and wired correctly, you should see the Widgets Demo from LVGL. See [The LVGSL Demos Page](https://lvgl.io/demos).
 
 ## Using this Code in Your Custom Project
 
@@ -97,4 +97,4 @@ If you encounter issues or have questions regarding the timing blocks or SPI int
 The course TAs/readers may be able to assist with general deployment questions, but as the author of this framework, contacting me directly is the fastest path to resolving hardware-specific bugs.
 
 
-**Future Outlook:** Support for the touch screen overlay will be introduced in an upcoming release.
+**The future is now:** Support for the touch screen overlay has been release.
