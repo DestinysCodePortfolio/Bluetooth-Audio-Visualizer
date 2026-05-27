@@ -16,6 +16,8 @@ module top(
     input  logic MOSI,
     input  logic CS
 );
+    //logic [15:0] pixel;
+    //logic [7:0]  pixel_address;
 
 lcd lcd_dut (
     .CLK(CLK),
@@ -24,11 +26,11 @@ lcd lcd_dut (
     .LCD_B(LCD_B),
     .LCD_G(LCD_G),
     .LCD_R(LCD_R),
-    .pixel(pixel),
-    .pixel_address(pixel_address)
+    //.pixel(pixel),
+    //.pixel_address(pixel_address)
 );
 
-spi spi_dut (
+/*spi spi_dut (
     .CLK(CLK),
     .SCK(SCK),
     .MOSI(MOSI),
@@ -36,6 +38,6 @@ spi spi_dut (
     .waddr(waddr),
     .wdata(wdata),
     .we(we)
-);
+);*/
 
 endmodule

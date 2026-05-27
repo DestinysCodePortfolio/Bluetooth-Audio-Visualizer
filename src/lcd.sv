@@ -8,18 +8,19 @@ module lcd
     output logic [4:0] LCD_B, // 5-bit blue color data
     output logic [5:0] LCD_G, // 6-bit green color data
     output logic [4:0] LCD_R,  // 5-bit red color data
-    input  logic [15:0] pixel,
-    output logic [7:0] pixel_address
+   // input  logic [15:0] pixel,
+    //output logic [7:0] pixel_address
 );
 
-logic [7:0]  waddr;
+/*logic [7:0]  waddr;
 logic [15:0] wdata;
 logic we;
+*/
 
 logic [9:0] x; //324 count
 logic [8:0] y; //285 count
-logic [3:0] yMod;
-logic [3:0] xMod;
+//logic [3:0] yMod;
+//logic [3:0] xMod;
 
 logic rst;
 assign rst = 1'b0;
