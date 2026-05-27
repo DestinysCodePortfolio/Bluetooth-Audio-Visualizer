@@ -67,7 +67,7 @@ assign LCD_CLK = CLK;
             yMod = 4'b0;
             xMod = 4'b0;
     end*/
-    LCD_DE  = 1'b1;
+    LCD_DE = (x < 480) && (y < 272);
 
     LCD_R = 5'b11111;
     LCD_G = 6'b000000;
