@@ -40,6 +40,8 @@ target_link_libraries(cs122_demo
     pico_btstack_flash_bank
     pico_btstack_sbc_decoder
     lvgl::lvgl
+    hardware_pwm
+
 )
 
 pico_enable_stdio_uart(cs122_demo 0)
