@@ -47,35 +47,59 @@ static btstack_sbc_decoder_state_t sbc_decoder_state;
 static volatile uint32_t total_frames_decoded = 0;
 
 // ─────────────────────────────────────────────────────────────
-// PWM Audio Output (Improved)
+// PWM Audio Output — ring buffer + repeating timer
 // ─────────────────────────────────────────────────────────────
 
-#define AUDIO_PIN_R 14
+#define AUDIO_PIN_R  14
+#define PWM_WRAP     255
+#define VOLUME_DIV   4
 
-// ~488kHz PWM carrier
-#define PWM_WRAP 255
+// Ring buffer (power of 2 size for fast masking)
+#define RING_SIZE    4096
+#define RING_MASK    (RING_SIZE - 1)
 
-// Higher number = quieter/cleaner
-#define VOLUME_DIV 32
+static uint8_t  ring_buf[RING_SIZE];
+static volatile uint32_t ring_head = 0;
+static volatile uint32_t ring_tail = 0;
 
-static int32_t audio_filter_prev = 0;
+static inline void ring_push(uint8_t val) {
+    uint32_t next = (ring_head + 1) & RING_MASK;
+    if (next == ring_tail) return; // drop sample if full
+    ring_buf[ring_head] = val;
+    ring_head = next;
+}
+
+static inline uint8_t ring_pop(void) {
+    if (ring_tail == ring_head) return PWM_WRAP / 2; // silence
+    uint8_t v = ring_buf[ring_tail];
+    ring_tail = (ring_tail + 1) & RING_MASK;
+    return v;
+}
+
+// Timer callback — fires at 44100 Hz, outputs one sample
+static bool audio_timer_cb(struct repeating_timer *t) {
+    (void)t;
+    pwm_set_gpio_level(AUDIO_PIN_R, ring_pop());
+    return true;
+}
+
+static struct repeating_timer audio_timer;
 
 void audio_init(void) {
-
     gpio_set_function(AUDIO_PIN_R, GPIO_FUNC_PWM);
 
     uint slice = pwm_gpio_to_slice_num(AUDIO_PIN_R);
 
     pwm_config cfg = pwm_get_default_config();
-
     pwm_config_set_clkdiv(&cfg, 1.0f);
-
     pwm_config_set_wrap(&cfg, PWM_WRAP);
-
     pwm_init(slice, &cfg, true);
 
-    // Silence midpoint
+    // Start at silence midpoint
     pwm_set_gpio_level(AUDIO_PIN_R, PWM_WRAP / 2);
+
+    // Repeating timer at ~44100 Hz (22.676 us per sample)
+    add_repeating_timer_us(-23, audio_timer_cb, NULL, &audio_timer);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -140,43 +164,30 @@ static void sbc_decoded_handler(int16_t *pcm_data,
 
     for (int i = 0; i < num_audio_frames; i++) {
 
-        // Get stereo samples
-        int16_t left = pcm_data[i * num_channels];
-
-        int16_t right =
-            (num_channels > 1)
-                ? pcm_data[i * num_channels + 1]
-                : left;
+        int16_t left  = pcm_data[i * num_channels];
+        int16_t right = (num_channels > 1)
+                            ? pcm_data[i * num_channels + 1]
+                            : left;
 
         // Mix stereo -> mono
-        int32_t mixed =
-            ((int32_t)left + right) / 2;
-
-        // Simple smoothing filter
-        mixed =
-            (mixed + audio_filter_prev) / 2;
-
-        audio_filter_prev = mixed;
+        int32_t mixed = ((int32_t)left + right) / 2;
 
         // Reduce volume
         mixed /= VOLUME_DIV;
 
         // Clamp
-        if (mixed > 32767) mixed = 32767;
+        if (mixed >  32767) mixed =  32767;
         if (mixed < -32768) mixed = -32768;
 
-        // Convert signed PCM -> unsigned PWM
-        uint32_t pwm_level =
-            (uint32_t)((mixed + 32768)
-            * PWM_WRAP / 65535);
-
-        pwm_set_gpio_level(
-            AUDIO_PIN_R,
-            pwm_level
+        // Convert signed PCM -> unsigned PWM level and push to ring buffer
+        uint8_t pwm_level = (uint8_t)(
+            ((mixed + 32768) * PWM_WRAP) / 65535
         );
+
+        ring_push(pwm_level);
     }
 
-    // Oscilloscope buffer
+    // Feed oscilloscope buffer
     audio_buf_push(
         pcm_data,
         (uint32_t)num_audio_frames,
@@ -186,12 +197,12 @@ static void sbc_decoded_handler(int16_t *pcm_data,
     total_frames_decoded++;
 
     if (total_frames_decoded % 100 == 0) {
-
         printf(
-            "[audio] frames=%lu rate=%d ch=%d\n",
+            "[audio] frames=%lu rate=%d ch=%d buf=%lu\n",
             (unsigned long)total_frames_decoded,
             sample_rate,
-            num_channels
+            num_channels,
+            (unsigned long)((ring_head - ring_tail) & RING_MASK)
         );
     }
 }
@@ -229,9 +240,7 @@ static void packet_handler(uint8_t packet_type,
     UNUSED(channel);
     UNUSED(size);
 
-    if (packet_type != HCI_EVENT_PACKET) {
-        return;
-    }
+    if (packet_type != HCI_EVENT_PACKET) return;
 
     switch (hci_event_packet_get_type(packet)) {
 
@@ -240,10 +249,7 @@ static void packet_handler(uint8_t packet_type,
             if (btstack_event_state_get_state(packet)
                 == HCI_STATE_WORKING)
             {
-                printf(
-                    "BT ready — pair as BTVisualizer\n"
-                );
-
+                printf("BT ready — pair as BTVisualizer\n");
                 gap_discoverable_control(1);
                 gap_connectable_control(1);
             }
@@ -253,12 +259,7 @@ static void packet_handler(uint8_t packet_type,
         case HCI_EVENT_PIN_CODE_REQUEST: {
 
             bd_addr_t addr;
-
-            hci_event_pin_code_request_get_bd_addr(
-                packet,
-                addr
-            );
-
+            hci_event_pin_code_request_get_bd_addr(packet, addr);
             gap_pin_code_response(addr, "0000");
 
             break;
@@ -267,12 +268,7 @@ static void packet_handler(uint8_t packet_type,
         case HCI_EVENT_USER_CONFIRMATION_REQUEST: {
 
             bd_addr_t addr;
-
-            hci_event_user_confirmation_request_get_bd_addr(
-                packet,
-                addr
-            );
-
+            hci_event_user_confirmation_request_get_bd_addr(packet, addr);
             gap_ssp_confirmation_response(addr);
 
             break;
@@ -282,9 +278,7 @@ static void packet_handler(uint8_t packet_type,
 
             printf(
                 "Connected, status: %d\n",
-                hci_event_connection_complete_get_status(
-                    packet
-                )
+                hci_event_connection_complete_get_status(packet)
             );
 
             break;
@@ -295,27 +289,22 @@ static void packet_handler(uint8_t packet_type,
 
             audio_buf_stop();
 
-            pwm_set_gpio_level(
-                AUDIO_PIN_R,
-                PWM_WRAP / 2
-            );
+            // Drain ring buffer and silence output
+            ring_head = ring_tail = 0;
+            pwm_set_gpio_level(AUDIO_PIN_R, PWM_WRAP / 2);
 
             break;
 
         case HCI_EVENT_AVDTP_META: {
 
             uint8_t sub =
-                hci_event_avdtp_meta_get_subevent_code(
-                    packet
-                );
+                hci_event_avdtp_meta_get_subevent_code(packet);
 
-            if (sub ==
-                AVDTP_SUBEVENT_STREAMING_CONNECTION_RELEASED
-                ||
-                sub ==
-                AVDTP_SUBEVENT_SIGNALING_CONNECTION_RELEASED)
+            if (sub == AVDTP_SUBEVENT_STREAMING_CONNECTION_RELEASED ||
+                sub == AVDTP_SUBEVENT_SIGNALING_CONNECTION_RELEASED)
             {
                 audio_buf_stop();
+                ring_head = ring_tail = 0;
             }
 
             break;
@@ -338,9 +327,7 @@ int main(void) {
 
     // CYW43 init
     if (cyw43_arch_init()) {
-
         printf("CYW43 init failed\n");
-
         return -1;
     }
 
@@ -357,19 +344,16 @@ int main(void) {
     );
 
     spi_display.begin();
-
     spi_display.clear();
 
     audio_buf_init();
 
     // Launch LVGL core
     g_spi_display = &spi_display;
-
     multicore_launch_core1(core1_entry);
 
     // BTstack init
     l2cap_init();
-
     sdp_init();
 
     btstack_sbc_decoder_init(
@@ -380,14 +364,8 @@ int main(void) {
     );
 
     a2dp_sink_init();
-
-    a2dp_sink_register_packet_handler(
-        &packet_handler
-    );
-
-    a2dp_sink_register_media_handler(
-        &a2dp_media_handler
-    );
+    a2dp_sink_register_packet_handler(&packet_handler);
+    a2dp_sink_register_media_handler(&a2dp_media_handler);
 
     avdtp_stream_endpoint_t *ep =
         a2dp_sink_create_stream_endpoint(
@@ -402,12 +380,7 @@ int main(void) {
     local_stream_endpoint = ep;
 
     // SDP A2DP
-    memset(
-        sdp_a2dp_sink_buffer,
-        0,
-        sizeof(sdp_a2dp_sink_buffer)
-    );
-
+    memset(sdp_a2dp_sink_buffer, 0, sizeof(sdp_a2dp_sink_buffer));
     a2dp_sink_create_sdp_record(
         sdp_a2dp_sink_buffer,
         sdp_create_service_record_handle(),
@@ -415,18 +388,10 @@ int main(void) {
         NULL,
         NULL
     );
-
-    sdp_register_service(
-        sdp_a2dp_sink_buffer
-    );
+    sdp_register_service(sdp_a2dp_sink_buffer);
 
     // SDP AVRCP
-    memset(
-        sdp_avrcp_buffer,
-        0,
-        sizeof(sdp_avrcp_buffer)
-    );
-
+    memset(sdp_avrcp_buffer, 0, sizeof(sdp_avrcp_buffer));
     avrcp_controller_create_sdp_record(
         sdp_avrcp_buffer,
         sdp_create_service_record_handle(),
@@ -434,33 +399,23 @@ int main(void) {
         NULL,
         NULL
     );
+    sdp_register_service(sdp_avrcp_buffer);
 
-    sdp_register_service(
-        sdp_avrcp_buffer
-    );
-
-    // Device name
+    // Device name & BT settings
     gap_set_local_name("BTVisualizer");
-
     gap_set_class_of_device(0x240404);
-
     gap_set_default_link_policy_settings(
         LM_LINK_POLICY_ENABLE_SNIFF_MODE
     );
 
     // HCI event callback
     hci_event_cb.callback = &packet_handler;
-
-    hci_add_event_handler(
-        &hci_event_cb
-    );
+    hci_add_event_handler(&hci_event_cb);
 
     // Power on Bluetooth
     hci_power_control(HCI_POWER_ON);
 
-    printf(
-        "BTVisualizer running — pair your phone\n"
-    );
+    printf("BTVisualizer running — pair your phone\n");
 
     btstack_run_loop_execute();
 
