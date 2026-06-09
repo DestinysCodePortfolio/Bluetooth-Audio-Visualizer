@@ -3,19 +3,21 @@
 // Core 0: BTstack run loop
 // Core 1: LVGL oscilloscope rendering loop
 //
-// Audio flow:
-//   Spotify → BT → A2DP → SBC decode → audio_buf_push() → LVGL oscilloscope
+// Bluetooth:
+//   Phone / Spotify -> A2DP -> SBC decode -> audio_buf_push() -> LVGL / PWM
 //
-// Real SD fallback flow:
-//   microSD playlist WAV → sd_wav_fallback_task() → audio_buf_push() → LVGL oscilloscope
+// Fallback:
+//   SD WAV playlist -> sd_wav_fallback_task() -> audio_buf_push() -> LVGL / PWM
+//   Generated audio  -> fallback_audio_task()    -> audio_buf_push() -> LVGL / PWM
 //
-// Generated fallback flow:
-//   fallback_audio_task() → generated PCM samples → audio_buf_push() → LVGL oscilloscope
+// Buttons are local fallback controls only:
+//   GP13 = Pause / Play SD or generated fallback
+//   GP14 = Next SD WAV file
+//   GP15 = Previous SD WAV file
 //
-// Buttons active-low, pulled up internally:
-//   GP13 = Pause / Play
-//   GP14 = Next
-//   GP15 = Previous
+// Important:
+//   This file does NOT enable AVRCP controller because that broke Spotify/A2DP
+//   connection behavior on the phone. Bluetooth audio is controlled from the phone.
 
 #include <stdio.h>
 #include <string.h>
@@ -28,15 +30,14 @@
 
 #include "btstack.h"
 #include "classic/btstack_sbc.h"
-#include "classic/avrcp_controller.h"
 
 #include "audio_buffer.h"
 #include "audio_fallback.h"
+#include "audio_pwm_output.h"
 #include "sd_wav_fallback.h"
 #include "spi_display.h"
 #include "lv_conf.h"
 #include "lvgl_oscilloscope.h"
-#include "audio_pwm_output.h"
 
 #include <lvgl.h>
 
@@ -57,54 +58,35 @@ static volatile bool     bluetooth_streaming = false;
 static volatile uint32_t last_bt_audio_ms    = 0;
 
 // ------------------------------------------------------------
-// AVRCP controller state
+// Playback / fallback state
 // ------------------------------------------------------------
 
-static uint16_t avrcp_cid       = 0;
-static bool     avrcp_connected = false;
-
-// ------------------------------------------------------------
-// Playback state
-// ------------------------------------------------------------
-
-static bool g_paused = false;
-
-// ------------------------------------------------------------
-// SD WAV fallback status
-// ------------------------------------------------------------
-
+static bool g_paused       = false;
 static bool g_sd_wav_ready = false;
-
-// ------------------------------------------------------------
-// Button debounce timestamps
-// ------------------------------------------------------------
 
 static uint32_t last_pause_press_ms = 0;
 static uint32_t last_next_press_ms  = 0;
 static uint32_t last_prev_press_ms  = 0;
 
 // ------------------------------------------------------------
-// BTstack registrations
+// BTstack registrations / buffers
 // ------------------------------------------------------------
 
 static btstack_packet_callback_registration_t hci_event_cb;
 static uint8_t sdp_a2dp_sink_buffer[220];
 static uint8_t sdp_avrcp_buffer[220];
 
-// SBC codec capabilities
 static uint8_t media_sbc_codec_capabilities[] = {
     (AVDTP_SBC_44100 << 4) | AVDTP_SBC_STEREO,
     (AVDTP_SBC_BLOCK_LENGTH_16 << 4) |
-    (AVDTP_SBC_SUBBANDS_8 << 2) |
-    AVDTP_SBC_ALLOCATION_METHOD_LOUDNESS,
+        (AVDTP_SBC_SUBBANDS_8 << 2) |
+        AVDTP_SBC_ALLOCATION_METHOD_LOUDNESS,
     2,
     53
 };
 
 static uint8_t media_sbc_codec_configuration[4];
-static avdtp_stream_endpoint_t *local_stream_endpoint;
-
-// SBC decoder state
+static avdtp_stream_endpoint_t *local_stream_endpoint = NULL;
 static btstack_sbc_decoder_state_t sbc_decoder_state;
 
 // ------------------------------------------------------------
@@ -127,10 +109,10 @@ static btstack_timer_source_t stats_timer;
 // Core 1 display object
 // ------------------------------------------------------------
 
-static ucr::bcoe::cs::cs122::LVGL_Oscilloscope *g_scope = nullptr;
+static ucr::bcoe::cs::cs122::LVGL_Oscilloscope *g_scope = NULL;
 
 // ------------------------------------------------------------
-// Helpers
+// Time helpers
 // ------------------------------------------------------------
 
 static uint32_t now_ms(void) {
@@ -141,8 +123,10 @@ uint32_t cs122_get_millis(void) {
     return now_ms();
 }
 
-// This was the missing function causing:
-// error: 'cs122_flush_cb_partial' was not declared in this scope
+// ------------------------------------------------------------
+// LVGL flush callback
+// ------------------------------------------------------------
+
 void cs122_flush_cb_partial(lv_display_t *disp,
                             const lv_area_t *area,
                             uint8_t *px_buf) {
@@ -160,6 +144,10 @@ void cs122_flush_cb_partial(lv_display_t *disp,
     lv_display_flush_ready(disp);
 }
 
+// ------------------------------------------------------------
+// Fallback helpers
+// ------------------------------------------------------------
+
 static void stop_all_fallbacks(void) {
     sd_wav_fallback_set_enabled(false);
     fallback_audio_set_enabled(false);
@@ -173,7 +161,7 @@ static void start_best_fallback(void) {
     }
 
     if (g_sd_wav_ready) {
-        printf("Fallback: using SD WAV\n");
+        printf("Fallback: using SD WAV: %s\n", sd_wav_fallback_current_file());
         sd_wav_fallback_set_enabled(true);
         fallback_audio_set_enabled(false);
     } else {
@@ -190,112 +178,78 @@ static void stop_audio_and_resume_fallback(void) {
 }
 
 // ------------------------------------------------------------
-// Button action handlers
+// Local button controls: SD/generated fallback only
 // ------------------------------------------------------------
 
-static void handle_pause(void) {
+static void handle_pause_button(void) {
+    if (bluetooth_streaming) {
+        printf("BTN: BT active, use phone for pause/play\n");
+        return;
+    }
+
     g_paused = !g_paused;
 
-#if defined(ENABLE_AVRCP_CONTROLLER)
-    if (avrcp_connected && bluetooth_streaming) {
-        if (g_paused) {
-            printf("BTN: BT pause\n");
-            avrcp_controller_pause(avrcp_cid);
-        } else {
-            printf("BTN: BT play\n");
-            avrcp_controller_play(avrcp_cid);
-        }
-
-        return;
-    }
-#else
-    if (bluetooth_streaming) {
-        printf("BTN: BT pause/play requested, but AVRCP controller is not enabled\n");
-        return;
-    }
-#endif
-
     if (g_paused) {
-        printf("BTN: fallback pause\n");
+        printf("BTN: SD/fallback pause\n");
         sd_wav_fallback_set_enabled(false);
         fallback_audio_set_enabled(false);
         audio_buf_stop();
     } else {
-        printf("BTN: fallback play\n");
+        printf("BTN: SD/fallback play\n");
         start_best_fallback();
     }
 }
 
-static void handle_next(void) {
-#if defined(ENABLE_AVRCP_CONTROLLER)
-    if (avrcp_connected && bluetooth_streaming) {
-        printf("BTN: BT next\n");
-        avrcp_controller_forward(avrcp_cid);
-        return;
-    }
-#else
+static void handle_next_button(void) {
     if (bluetooth_streaming) {
-        printf("BTN: BT next requested, but AVRCP controller is not enabled\n");
-        return;
-    }
-#endif
-
-    if (g_sd_wav_ready) {
-        printf("BTN: SD next\n");
-
-        g_paused = false;
-        bluetooth_streaming = false;
-
-        fallback_audio_set_enabled(false);
-
-        if (sd_wav_fallback_next()) {
-            sd_wav_fallback_set_enabled(true);
-            printf("Now playing SD: %s\n", sd_wav_fallback_current_file());
-        } else {
-            printf("SD next failed, using generated fallback\n");
-            fallback_audio_set_enabled(true);
-        }
-
+        printf("BTN: BT active, next ignored\n");
         return;
     }
 
-    printf("BTN: generated fallback has no next track\n");
+    if (!g_sd_wav_ready) {
+        printf("BTN: generated fallback has no next track\n");
+        return;
+    }
+
+    printf("BTN: SD next\n");
+
+    g_paused = false;
+    fallback_audio_set_enabled(false);
+
+    if (sd_wav_fallback_next()) {
+        printf("Now playing SD: %s\n", sd_wav_fallback_current_file());
+        sd_wav_fallback_set_enabled(true);
+    } else {
+        printf("SD next failed, using generated fallback\n");
+        sd_wav_fallback_set_enabled(false);
+        fallback_audio_set_enabled(true);
+    }
 }
 
-static void handle_prev(void) {
-#if defined(ENABLE_AVRCP_CONTROLLER)
-    if (avrcp_connected && bluetooth_streaming) {
-        printf("BTN: BT prev\n");
-        avrcp_controller_backward(avrcp_cid);
-        return;
-    }
-#else
+static void handle_prev_button(void) {
     if (bluetooth_streaming) {
-        printf("BTN: BT prev requested, but AVRCP controller is not enabled\n");
-        return;
-    }
-#endif
-
-    if (g_sd_wav_ready) {
-        printf("BTN: SD prev\n");
-
-        g_paused = false;
-        bluetooth_streaming = false;
-
-        fallback_audio_set_enabled(false);
-
-        if (sd_wav_fallback_prev()) {
-            sd_wav_fallback_set_enabled(true);
-            printf("Now playing SD: %s\n", sd_wav_fallback_current_file());
-        } else {
-            printf("SD prev failed, using generated fallback\n");
-            fallback_audio_set_enabled(true);
-        }
-
+        printf("BTN: BT active, previous ignored\n");
         return;
     }
 
-    printf("BTN: generated fallback has no previous track\n");
+    if (!g_sd_wav_ready) {
+        printf("BTN: generated fallback has no previous track\n");
+        return;
+    }
+
+    printf("BTN: SD previous\n");
+
+    g_paused = false;
+    fallback_audio_set_enabled(false);
+
+    if (sd_wav_fallback_prev()) {
+        printf("Now playing SD: %s\n", sd_wav_fallback_current_file());
+        sd_wav_fallback_set_enabled(true);
+    } else {
+        printf("SD previous failed, using generated fallback\n");
+        sd_wav_fallback_set_enabled(false);
+        fallback_audio_set_enabled(true);
+    }
 }
 
 // ------------------------------------------------------------
@@ -310,7 +264,7 @@ static void sbc_decoded_handler(int16_t *pcm_data,
     (void)context;
 
     bluetooth_streaming = true;
-    last_bt_audio_ms    = now_ms();
+    last_bt_audio_ms = now_ms();
 
     audio_buf_push(
         pcm_data,
@@ -318,10 +272,10 @@ static void sbc_decoded_handler(int16_t *pcm_data,
         AUDIO_SRC_BLUETOOTH
     );
 
-    total_frames_decoded  += 1;
+    total_frames_decoded += 1;
     total_samples_decoded += (uint32_t)num_audio_frames;
-    last_sample_rate       = sample_rate;
-    last_channels          = num_channels;
+    last_sample_rate = sample_rate;
+    last_channels = num_channels;
 }
 
 // ------------------------------------------------------------
@@ -333,7 +287,7 @@ static void a2dp_media_handler(uint8_t seid,
                                uint16_t size) {
     (void)seid;
 
-    // 12-byte RTP header + 1-byte SBC payload header = 13 bytes
+    // 12-byte RTP header + 1-byte SBC payload header = 13 bytes.
     if (size < 13) {
         return;
     }
@@ -353,29 +307,43 @@ static void a2dp_media_handler(uint8_t seid,
 static void fallback_timer_handler(btstack_timer_source_t *ts) {
     uint32_t t = now_ms();
 
-    // Button polling: active-low with internal pull-up
-    if (!gpio_get(BTN_PAUSE_PIN) && (t - last_pause_press_ms > BTN_DEBOUNCE_MS)) {
+    // Raw button debug: not pressed = 1, pressed = 0.
+    static uint32_t last_button_debug_ms = 0;
+
+    if (t - last_button_debug_ms > 1000) {
+        last_button_debug_ms = t;
+
+        printf("BTN RAW: GP13=%d GP14=%d GP15=%d\n",
+               gpio_get(BTN_PAUSE_PIN),
+               gpio_get(BTN_NEXT_PIN),
+               gpio_get(BTN_PREV_PIN));
+    }
+
+    if (!gpio_get(BTN_PAUSE_PIN) &&
+        (t - last_pause_press_ms > BTN_DEBOUNCE_MS)) {
         last_pause_press_ms = t;
-        handle_pause();
+        handle_pause_button();
     }
 
-    if (!gpio_get(BTN_NEXT_PIN) && (t - last_next_press_ms > BTN_DEBOUNCE_MS)) {
+    if (!gpio_get(BTN_NEXT_PIN) &&
+        (t - last_next_press_ms > BTN_DEBOUNCE_MS)) {
         last_next_press_ms = t;
-        handle_next();
+        handle_next_button();
     }
 
-    if (!gpio_get(BTN_PREV_PIN) && (t - last_prev_press_ms > BTN_DEBOUNCE_MS)) {
+    if (!gpio_get(BTN_PREV_PIN) &&
+        (t - last_prev_press_ms > BTN_DEBOUNCE_MS)) {
         last_prev_press_ms = t;
-        handle_prev();
+        handle_prev_button();
     }
 
-    // Bluetooth timeout watchdog
+    // Bluetooth timeout watchdog.
     if (bluetooth_streaming && (t - last_bt_audio_ms > 1500)) {
         printf("BT timeout: no audio samples, resuming fallback\n");
         stop_audio_and_resume_fallback();
     }
 
-    // Fallback tasks
+    // Run fallback only when Bluetooth is not actively producing samples.
     if (!bluetooth_streaming && !g_paused) {
         if (g_sd_wav_ready && sd_wav_fallback_is_enabled()) {
             sd_wav_fallback_task();
@@ -387,56 +355,6 @@ static void fallback_timer_handler(btstack_timer_source_t *ts) {
     btstack_run_loop_set_timer(ts, 20);
     btstack_run_loop_add_timer(ts);
 }
-
-// ------------------------------------------------------------
-// AVRCP controller packet handler
-// ------------------------------------------------------------
-
-#if defined(ENABLE_AVRCP_CONTROLLER)
-static void avrcp_controller_packet_handler(uint8_t packet_type,
-                                            uint16_t channel,
-                                            uint8_t *packet,
-                                            uint16_t size) {
-    UNUSED(channel);
-    UNUSED(size);
-
-    if (packet_type != HCI_EVENT_PACKET) {
-        return;
-    }
-
-    if (hci_event_packet_get_type(packet) != HCI_EVENT_AVRCP_META) {
-        return;
-    }
-
-    uint8_t sub = hci_event_avrcp_meta_get_subevent_code(packet);
-
-    switch (sub) {
-        case AVRCP_SUBEVENT_CONNECTION_ESTABLISHED: {
-            uint8_t status = avrcp_subevent_connection_established_get_status(packet);
-
-            if (status != ERROR_CODE_SUCCESS) {
-                printf("AVRCP controller connect failed: 0x%02x\n", status);
-                break;
-            }
-
-            avrcp_cid       = avrcp_subevent_connection_established_get_avrcp_cid(packet);
-            avrcp_connected = true;
-
-            printf("AVRCP controller connected, cid=0x%04x\n", avrcp_cid);
-            break;
-        }
-
-        case AVRCP_SUBEVENT_CONNECTION_RELEASED:
-            avrcp_connected = false;
-            avrcp_cid       = 0;
-            printf("AVRCP controller disconnected\n");
-            break;
-
-        default:
-            break;
-    }
-}
-#endif
 
 // ------------------------------------------------------------
 // HCI / A2DP event handler
@@ -490,34 +408,16 @@ static void packet_handler(uint8_t packet_type,
                    hci_event_simple_pairing_complete_get_status(packet));
             break;
 
-        case HCI_EVENT_CONNECTION_COMPLETE: {
-            uint8_t status = hci_event_connection_complete_get_status(packet);
-            printf("Connected! status: %d\n", status);
-
-#if defined(ENABLE_AVRCP_CONTROLLER)
-            if (status == ERROR_CODE_SUCCESS) {
-                bd_addr_t peer_addr;
-                hci_event_connection_complete_get_bd_addr(packet, peer_addr);
-
-                uint16_t cid = 0;
-                uint8_t err = avrcp_controller_connect(peer_addr, &cid);
-
-                if (err != ERROR_CODE_SUCCESS) {
-                    printf("AVRCP controller connect initiation failed: 0x%02x\n", err);
-                }
-            }
-#endif
+        case HCI_EVENT_CONNECTION_COMPLETE:
+            printf("Connected! status: %d\n",
+                   hci_event_connection_complete_get_status(packet));
             break;
-        }
 
         case HCI_EVENT_DISCONNECTION_COMPLETE:
             printf("Disconnected, reason: 0x%02x\n",
                    hci_event_disconnection_complete_get_reason(packet));
 
-            avrcp_connected = false;
-            avrcp_cid       = 0;
-            g_paused        = false;
-
+            g_paused = false;
             stop_audio_and_resume_fallback();
 
             gap_discoverable_control(1);
@@ -525,31 +425,33 @@ static void packet_handler(uint8_t packet_type,
             break;
 
         case HCI_EVENT_A2DP_META: {
-            uint8_t sub = hci_event_a2dp_meta_get_subevent_code(packet);
+            uint8_t subevent = hci_event_a2dp_meta_get_subevent_code(packet);
 
-            switch (sub) {
+            switch (subevent) {
                 case A2DP_SUBEVENT_STREAM_STARTED:
                     printf("A2DP: stream STARTED\n");
 
                     bluetooth_streaming = true;
-                    last_bt_audio_ms    = now_ms();
-                    g_paused            = false;
+                    last_bt_audio_ms = now_ms();
+                    g_paused = false;
 
                     stop_all_fallbacks();
                     break;
 
                 case A2DP_SUBEVENT_STREAM_SUSPENDED:
                     printf("A2DP: stream SUSPENDED\n");
+                    bluetooth_streaming = false;
                     stop_audio_and_resume_fallback();
                     break;
 
                 case A2DP_SUBEVENT_STREAM_RELEASED:
                     printf("A2DP: stream RELEASED\n");
+                    bluetooth_streaming = false;
                     stop_audio_and_resume_fallback();
                     break;
 
                 default:
-                    printf("A2DP event subcode: 0x%02x\n", sub);
+                    printf("A2DP event subcode: 0x%02x\n", subevent);
                     break;
             }
 
@@ -568,12 +470,12 @@ static void packet_handler(uint8_t packet_type,
 static void stats_timer_handler(btstack_timer_source_t *ts) {
     static uint32_t last_samples = 0;
 
-    uint32_t now   = total_samples_decoded;
+    uint32_t now = total_samples_decoded;
     uint32_t delta = now - last_samples;
-    last_samples   = now;
+    last_samples = now;
 
     if (delta > 0) {
-        printf("[stats] BT %lu samples/s, %lu Hz, %d ch, total frames=%lu\n",
+        printf("[stats] BT %lu samples/s, %lu Hz, %d ch, frames=%lu\n",
                (unsigned long)delta,
                (unsigned long)last_sample_rate,
                last_channels,
@@ -581,7 +483,7 @@ static void stats_timer_handler(btstack_timer_source_t *ts) {
     } else if (g_paused) {
         printf("[stats] paused\n");
     } else if (g_sd_wav_ready && sd_wav_fallback_is_enabled()) {
-        printf("[stats] SD WAV fallback active: %s\n",
+        printf("[stats] SD WAV active: %s\n",
                sd_wav_fallback_current_file());
     } else if (fallback_audio_is_enabled()) {
         printf("[stats] generated fallback active\n");
@@ -594,7 +496,7 @@ static void stats_timer_handler(btstack_timer_source_t *ts) {
 }
 
 // ------------------------------------------------------------
-// Core 1 — LVGL display loop
+// Core 1 display loop
 // ------------------------------------------------------------
 
 void core1_entry(void) {
@@ -615,7 +517,7 @@ int main(void) {
 
     printf("\n=== BTVisualizer ===\n");
 
-    // GPIO button setup: active-low, internal pull-up
+    // Button setup.
     const uint btn_pins[] = {
         BTN_PAUSE_PIN,
         BTN_NEXT_PIN,
@@ -628,7 +530,7 @@ int main(void) {
         gpio_pull_up(btn_pins[i]);
     }
 
-    printf("Buttons ready: GP%d=pause  GP%d=next  GP%d=prev\n",
+    printf("Buttons ready: GP%d=pause GP%d=next GP%d=prev\n",
            BTN_PAUSE_PIN,
            BTN_NEXT_PIN,
            BTN_PREV_PIN);
@@ -642,19 +544,20 @@ int main(void) {
     fallback_audio_init();
     audio_pwm_output_init();
 
-    // Starts with song1.wav, then button controls can go through song2.wav...song5.wav
+    // SD playlist fallback. Expected files are song1.wav ... song5.wav.
     g_sd_wav_ready = sd_wav_fallback_init_playlist();
 
     if (g_sd_wav_ready) {
-        printf("SD WAV playlist ready: %s\n",
-               sd_wav_fallback_current_file());
+        printf("SD WAV playlist ready: %s\n", sd_wav_fallback_current_file());
+        sd_wav_fallback_set_enabled(true);
+        fallback_audio_set_enabled(false);
     } else {
         printf("SD WAV fallback failed, generated fallback will be used\n");
+        sd_wav_fallback_set_enabled(false);
+        fallback_audio_set_enabled(true);
     }
 
-    start_best_fallback();
-
-    // Display + oscilloscope
+    // Display + oscilloscope.
     static ucr::bcoe::SPIDisplay spi_display(480, 272, 10000000, 20);
 
     spi_display.begin();
@@ -667,10 +570,9 @@ int main(void) {
     );
 
     g_scope = &scope;
-
     multicore_launch_core1(core1_entry);
 
-    // BTstack setup
+    // BTstack setup.
     l2cap_init();
     sdp_init();
     sm_init();
@@ -679,7 +581,7 @@ int main(void) {
     gap_ssp_set_auto_accept(1);
     gap_set_bondable_mode(1);
 
-    // A2DP sink
+    // A2DP sink.
     a2dp_sink_init();
     a2dp_sink_register_packet_handler(&packet_handler);
     a2dp_sink_register_media_handler(&a2dp_media_handler);
@@ -712,7 +614,8 @@ int main(void) {
 
     sdp_register_service(sdp_a2dp_sink_buffer);
 
-    // AVRCP target
+    // AVRCP target only.
+    // Do NOT enable AVRCP controller here; it made Spotify/A2DP unreliable.
     avrcp_init();
     avrcp_target_init();
 
@@ -728,16 +631,9 @@ int main(void) {
 
     sdp_register_service(sdp_avrcp_buffer);
 
-#if defined(ENABLE_AVRCP_CONTROLLER)
-    // AVRCP controller lets our physical buttons control phone media.
-    avrcp_controller_init();
-    avrcp_controller_register_packet_handler(&avrcp_controller_packet_handler);
-    printf("AVRCP controller enabled\n");
-#else
-    printf("AVRCP controller not enabled; buttons still control SD playlist/fallback\n");
-#endif
+    printf("AVRCP target initialized; buttons control SD/fallback only\n");
 
-    // SBC decoder
+    // SBC decoder.
     btstack_sbc_decoder_init(
         &sbc_decoder_state,
         SBC_MODE_STANDARD,
@@ -747,25 +643,24 @@ int main(void) {
 
     printf("SBC decoder initialized\n");
 
-    // GAP
+    // GAP.
     gap_set_local_name("BTVisualizer");
     gap_set_class_of_device(0x240414);
 
     hci_event_cb.callback = &packet_handler;
     hci_add_event_handler(&hci_event_cb);
 
-    // Stats timer: 1 second
+    // Stats timer.
     stats_timer.process = &stats_timer_handler;
     btstack_run_loop_set_timer(&stats_timer, 1000);
     btstack_run_loop_add_timer(&stats_timer);
 
-    // Fallback + buttons timer: 20 ms
+    // Fallback + buttons timer.
     fallback_timer.process = &fallback_timer_handler;
     btstack_run_loop_set_timer(&fallback_timer, 20);
     btstack_run_loop_add_timer(&fallback_timer);
 
     hci_power_control(HCI_POWER_ON);
-
     btstack_run_loop_execute();
 
     return 0;
