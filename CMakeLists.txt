@@ -65,6 +65,7 @@ add_executable(bt_visualizer
     src/audio_buffer.cpp
     src/audio_fallback.cpp
     src/sd_wav_fallback.cpp
+    src/audio_pwm_output.cpp
     src/spi_display.cpp
     src/cs122_app.cpp
     src/lvgl_oscilloscope.cpp
@@ -97,6 +98,7 @@ target_link_libraries(bt_visualizer
     pico_btstack_flash_bank
     pico_btstack_sbc_decoder
     hardware_spi
+    hardware_pwm
     lvgl
     pico_fatfs
     m

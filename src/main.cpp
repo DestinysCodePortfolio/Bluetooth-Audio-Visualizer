@@ -36,6 +36,7 @@
 #include "spi_display.h"
 #include "lv_conf.h"
 #include "lvgl_oscilloscope.h"
+#include "audio_pwm_output.h"
 
 #include <lvgl.h>
 
@@ -639,6 +640,7 @@ int main(void) {
 
     audio_buf_init();
     fallback_audio_init();
+    audio_pwm_output_init();
 
     // Starts with song1.wav, then button controls can go through song2.wav...song5.wav
     g_sd_wav_ready = sd_wav_fallback_init_playlist();
