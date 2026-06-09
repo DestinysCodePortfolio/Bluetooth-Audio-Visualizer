@@ -66,6 +66,6 @@ void fallback_audio_task(void) {
     audio_buf_push(
         fallback_samples,
         FALLBACK_BLOCK_SIZE,
-        AUDIO_SRC_SD
+        AUDIO_SRC_FALLBACK
     );
 }

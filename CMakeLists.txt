@@ -1,3 +1,17 @@
+# == DO NOT EDIT THE FOLLOWING LINES for the Raspberry Pi Pico VS Code Extension to work ==
+if(WIN32)
+    set(USERHOME $ENV{USERPROFILE})
+else()
+    set(USERHOME $ENV{HOME})
+endif()
+set(sdkVersion 2.2.0)
+set(toolchainVersion 14_2_Rel1)
+set(picotoolVersion 2.2.0-a4)
+set(picoVscode ${USERHOME}/.pico-sdk/cmake/pico-vscode.cmake)
+if (EXISTS ${picoVscode})
+    include(${picoVscode})
+endif()
+# ====================================================================================
 cmake_minimum_required(VERSION 3.13)
 
 set(CMAKE_C_STANDARD 11)
@@ -42,11 +56,15 @@ target_include_directories(lvgl PUBLIC
     ${CMAKE_SOURCE_DIR}/src
 )
 
+# FatFS SD card library
+add_subdirectory(lib/pico_fatfs)
+
 # Main executable
 add_executable(bt_visualizer
     src/main.cpp
     src/audio_buffer.cpp
     src/audio_fallback.cpp
+    src/sd_wav_fallback.cpp
     src/spi_display.cpp
     src/cs122_app.cpp
     src/lvgl_oscilloscope.cpp
@@ -62,6 +80,11 @@ target_include_directories(bt_visualizer PRIVATE
     ${CMAKE_SOURCE_DIR}/src
     ${LVGL_DIR}
     ${LVGL_DIR}/src
+
+    # FatFS headers
+    ${CMAKE_SOURCE_DIR}/lib/pico_fatfs
+    ${CMAKE_SOURCE_DIR}/lib/pico_fatfs/fatfs
+    ${CMAKE_SOURCE_DIR}/lib/pico_fatfs/fatfs/source
 )
 
 target_link_libraries(bt_visualizer
@@ -75,6 +98,8 @@ target_link_libraries(bt_visualizer
     pico_btstack_sbc_decoder
     hardware_spi
     lvgl
+    pico_fatfs
+    m
 )
 
 pico_add_extra_outputs(bt_visualizer)
