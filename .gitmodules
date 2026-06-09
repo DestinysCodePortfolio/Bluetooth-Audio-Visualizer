@@ -1,3 +1,6 @@
 [submodule "sw/lvgl"]
 	path = sw/lvgl
 	url = https://github.com/lvgl/lvgl.git
+[submodule "lib/pico_fatfs"]
+	path = lib/pico_fatfs
+	url = https://github.com/elehobica/pico_fatfs.git
