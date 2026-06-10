@@ -1,22 +1,5 @@
-// main.cpp — BTVisualizer
-//
-// Core 0: BTstack run loop
-// Core 1: LVGL oscilloscope rendering loop
-//
-// Bluetooth:
-//   Phone / Spotify -> A2DP -> SBC decode -> audio_buf_push() -> LVGL / PWM
-//
-// Fallback:
-//   SD WAV playlist -> sd_wav_fallback_task() -> audio_buf_push() -> LVGL / PWM
-//
-// Buttons are local SD fallback controls only:
-//   GP3 = Pause / Play SD fallback, physical pin 5
-//   GP4 = Next SD WAV file, physical pin 6
-//   GP8 = Previous SD WAV file, physical pin 11
-//
-// Important:
-//   This file does NOT enable AVRCP controller because that broke Spotify/A2DP.
-//   Bluetooth audio is controlled from the phone.
+
+#include "sd_spi_probe.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -389,7 +372,7 @@ static void fallback_timer_handler(btstack_timer_source_t *ts) {
         }
     }
 
-    btstack_run_loop_set_timer(ts, 20);
+    btstack_run_loop_set_timer(ts, 5);
     btstack_run_loop_add_timer(ts);
 }
 
@@ -571,6 +554,8 @@ int main(void) {
 
     printf("Trying SD WAV playlist...\n");
     printf("MAIN DEBUG: about to init SD playlist\n");
+
+    sd_spi_probe_run();
     
     g_sd_wav_ready = sd_wav_fallback_init_playlist();
    
