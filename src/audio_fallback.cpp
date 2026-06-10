@@ -1,71 +1,58 @@
 #include "audio_fallback.h"
-
-#include <math.h>
-#include "pico/stdlib.h"
 #include "audio_buffer.h"
 
-#define FALLBACK_BLOCK_SIZE 256
+#include <math.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <stdio.h>
 
-static bool fallback_enabled = false;
-static int16_t fallback_samples[FALLBACK_BLOCK_SIZE];
+#define FALLBACK_SAMPLE_RATE 44100
+#define FALLBACK_BLOCK_SAMPLES 256
+#define FALLBACK_TONE_HZ 220.0f
+#define PI_F 3.14159265358979323846f
 
-static float phase = 0.0f;
-static uint32_t tick_count = 0;
+static bool s_enabled = false;
+static float s_phase = 0.0f;
 
 void fallback_audio_init(void) {
-    fallback_enabled = false;
-    phase = 0.0f;
-    tick_count = 0;
+    s_enabled = false;
+    s_phase = 0.0f;
+    printf("Generated fallback audio initialized\n");
 }
 
 void fallback_audio_set_enabled(bool enabled) {
-    fallback_enabled = enabled;
+    s_enabled = enabled;
 
-    if (!enabled) {
+    if (!s_enabled) {
         audio_buf_stop();
     }
 }
 
 bool fallback_audio_is_enabled(void) {
-    return fallback_enabled;
+    return s_enabled;
 }
 
 void fallback_audio_task(void) {
-    if (!fallback_enabled) {
+    if (!s_enabled) {
         return;
     }
 
-    tick_count++;
+    static int16_t samples[FALLBACK_BLOCK_SAMPLES];
 
-    for (int i = 0; i < FALLBACK_BLOCK_SIZE; i++) {
-        float sine = sinf(phase);
+    const float phase_step = 2.0f * PI_F * FALLBACK_TONE_HZ / FALLBACK_SAMPLE_RATE;
 
-        // Fake beat pulse every 40 timer ticks
-        float beat_gain = 1.0f;
-        if ((tick_count % 40) < 5) {
-            beat_gain = 2.4f;
-        }
+    for (int i = 0; i < FALLBACK_BLOCK_SAMPLES; i++) {
+        float value = sinf(s_phase);
 
-        float sample = sine * beat_gain * 9000.0f;
+        // Keep it quiet so it does not blast the speaker.
+        samples[i] = (int16_t)(value * 3000.0f);
 
-        if (sample > 32767.0f) {
-            sample = 32767.0f;
-        } else if (sample < -32768.0f) {
-            sample = -32768.0f;
-        }
+        s_phase += phase_step;
 
-        fallback_samples[i] = (int16_t)sample;
-
-        phase += 0.08f;
-
-        if (phase >= 6.2831853f) {
-            phase -= 6.2831853f;
+        if (s_phase >= 2.0f * PI_F) {
+            s_phase -= 2.0f * PI_F;
         }
     }
 
-    audio_buf_push(
-        fallback_samples,
-        FALLBACK_BLOCK_SIZE,
-        AUDIO_SRC_FALLBACK
-    );
+    audio_buf_push(samples, FALLBACK_BLOCK_SAMPLES, AUDIO_SRC_FALLBACK);
 }

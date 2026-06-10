@@ -5,10 +5,22 @@
 #include <stdint.h>
 
 #include "pico/stdlib.h"
+#include "hardware/spi.h"
 #include "audio_buffer.h"
 #include "ff.h"
+#include "tf_card.h"
 
-#define WAV_BLOCK_SAMPLES 256
+#define SD_MISO_PIN 12
+#define SD_CS_PIN   13
+#define SD_SCK_PIN  14
+#define SD_MOSI_PIN 15
+// Number of mono samples pushed to the audio buffer per sd_wav_fallback_task()
+// call.  The PWM IRQ consumes samples at 44100 Hz; the task is called roughly
+// every 5–20 ms depending on the run-loop.  512 samples ≈ 11.6 ms @ 44.1 kHz,
+// giving comfortable headroom with the now-larger 8192-sample ring buffer.
+// The old value (256 ≈ 5.8 ms) was less than one task period, so the buffer
+// starved on almost every cycle.
+#define WAV_BLOCK_SAMPLES 512
 
 static FATFS fs;
 static FIL wav_file;
@@ -214,6 +226,38 @@ static bool open_wav_file(const char *filename) {
 }
 
 bool sd_wav_fallback_init(const char *filename) {
+    static bool sd_config_done = false;
+
+    if (!sd_config_done) {
+        pico_fatfs_spi_config_t config = {
+            spi1,              // SPI hardware instance
+            CLK_SLOW_DEFAULT,  // slow clock for SD init
+            10 * MHZ,          // faster clock after init
+            SD_MISO_PIN,       // MISO = GP12, physical pin 16
+            SD_CS_PIN,         // CS   = GP13, physical pin 17
+            SD_SCK_PIN,        // SCK  = GP14, physical pin 19
+            SD_MOSI_PIN,       // MOSI = GP15, physical pin 20
+            true               // internal pullups
+        };
+
+        bool using_hw_spi = pico_fatfs_set_config(&config);
+
+        printf("SD config: %s, MISO=GP%d CS=GP%d SCK=GP%d MOSI=GP%d\n",
+               using_hw_spi ? "hardware SPI1" : "PIO SPI",
+               SD_MISO_PIN,
+               SD_CS_PIN,
+               SD_SCK_PIN,
+               SD_MOSI_PIN);
+
+        // Force SD chip-select inactive before mount
+        gpio_init(SD_CS_PIN);
+        gpio_set_dir(SD_CS_PIN, GPIO_OUT);
+        gpio_put(SD_CS_PIN, 1);
+        sleep_ms(20);
+
+        sd_config_done = true;
+    }
+
     printf("SD WAV: mounting...\n");
 
     FRESULT fr = f_mount(&fs, "", 1);
@@ -238,6 +282,7 @@ bool sd_wav_fallback_init(const char *filename) {
 
 bool sd_wav_fallback_init_playlist(void) {
     playlist_index = 0;
+    printf("SD WAV: playlist init, first file = %s\n", playlist[playlist_index]);
     return sd_wav_fallback_init(playlist[playlist_index]);
 }
 
@@ -373,7 +418,8 @@ void sd_wav_fallback_task(void) {
         );
 
     } else {
-        // Stereo WAV: read L/R pairs, convert to mono by averaging.
+        // Stereo WAV: read L/R pairs and downmix to mono by averaging.
+        // Temp buffer must hold WAV_BLOCK_SAMPLES stereo frames = 2x samples.
         int16_t stereo_temp[WAV_BLOCK_SAMPLES * 2];
 
         UINT bytes_to_read = WAV_BLOCK_SAMPLES * 2 * sizeof(int16_t);
@@ -397,9 +443,8 @@ void sd_wav_fallback_task(void) {
         uint32_t frames = int16_count / 2;
 
         for (uint32_t i = 0; i < frames; i++) {
-            int32_t left = stereo_temp[2 * i];
+            int32_t left  = stereo_temp[2 * i];
             int32_t right = stereo_temp[2 * i + 1];
-
             sample_block[i] = (int16_t)((left + right) / 2);
         }
 
