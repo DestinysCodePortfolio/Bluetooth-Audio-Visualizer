@@ -69,6 +69,7 @@ add_executable(bt_visualizer
     src/spi_display.cpp
     src/cs122_app.cpp
     src/lvgl_oscilloscope.cpp
+    src/sd_spi_probe.cpp
 
 )
 
