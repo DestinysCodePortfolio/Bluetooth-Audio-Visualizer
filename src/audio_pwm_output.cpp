@@ -2,7 +2,6 @@
 #include "audio_buffer.h"
 
 #include <stdio.h>
-#include <string.h>
 #include "pico/stdlib.h"
 #include "hardware/pwm.h"
 #include "hardware/irq.h"
@@ -10,94 +9,101 @@
 
 #define AUDIO_LEFT_PIN   26
 #define AUDIO_RIGHT_PIN  27
-#define DEFAULT_SAMPLE_RATE 44100
-#define OUTPUT_GAIN_NUM     2
-#define OUTPUT_GAIN_DEN     3
+#define SAMPLE_RATE      44100
+#define PWM_WRAP         2047
 
-// PWM wrap value chosen as a power-of-two for simple int16 -> level mapping.
-// sys_clock / (divider * PWM_WRAP) = SAMPLE_RATE
-// At 132 MHz: divider = 132000000 / (44100 * 2048) ≈ 1.46
-#define PWM_WRAP         2048
+// Lower volume to reduce clipping/wobble through PAM8403.
+// Try 4 first. If too quiet, change to 2.
+#define VOLUME_DIVIDER   4
 
 static bool s_enabled = false;
-static bool s_initialized = false;
-static uint32_t s_sample_rate = DEFAULT_SAMPLE_RATE;
+
 static uint s_slice_l;
 static uint s_slice_r;
+static uint s_chan_l;
+static uint s_chan_r;
 
-static float audio_pwm_calc_divider(uint32_t sample_rate) {
-    float sys_clk = (float)clock_get_hz(clk_sys);
-    return sys_clk / ((float)sample_rate * PWM_WRAP);
-}
-
-static int16_t audio_pwm_condition_sample(int16_t sample) {
-    int32_t shaped = ((int32_t)sample * OUTPUT_GAIN_NUM) / OUTPUT_GAIN_DEN;
-
-    if (shaped > 32767) {
-        shaped = 32767;
-    } else if (shaped < -32768) {
-        shaped = -32768;
-    }
-
-    return (int16_t)shaped;
-}
+static int16_t last_sample = 0;
+static uint32_t s_sample_rate = 44100;
 
 static void pwm_irq_handler(void) {
-    // Clear the interrupt on the left slice (right follows the same clock).
     pwm_clear_irq(s_slice_l);
 
     if (!s_enabled) {
-        pwm_set_chan_level(s_slice_l, PWM_CHAN_A, PWM_WRAP / 2);
-        pwm_set_chan_level(s_slice_r, PWM_CHAN_A, PWM_WRAP / 2);
+        pwm_set_chan_level(s_slice_l, s_chan_l, PWM_WRAP / 2);
+        pwm_set_chan_level(s_slice_r, s_chan_r, PWM_WRAP / 2);
         return;
     }
 
-    // Pull the *next* sample from the ring buffer using the advancing read
-    // cursor.  The old code called audio_buf_copy_latest() which always
-    // returned the newest sample — meaning every IRQ replayed the same value
-    // instead of streaming forward through the buffer.
-    int16_t sample = audio_pwm_condition_sample(audio_buf_read_one());
+    int16_t sample = audio_buf_read_one();
 
-    // Map int16 [-32768, 32767] → [0, PWM_WRAP]
-    uint16_t level = (uint16_t)(((int32_t)sample + 32768) * PWM_WRAP / 65536);
+    // If the buffer underruns, audio_buf_read_one() returns 0.
+    // Instead of jumping hard to silence, smooth it slightly.
+    if (sample == 0) {
+        sample = last_sample / 2;
+    }
 
-    pwm_set_chan_level(s_slice_l, PWM_CHAN_A, level);
-    pwm_set_chan_level(s_slice_r, PWM_CHAN_A, level);
+    last_sample = sample;
+
+    sample = sample / VOLUME_DIVIDER;
+
+    uint16_t level =
+        (uint16_t)(((int32_t)sample + 32768) * PWM_WRAP / 65535);
+
+    if (level > PWM_WRAP) {
+        level = PWM_WRAP;
+    }
+
+    pwm_set_chan_level(s_slice_l, s_chan_l, level);
+    pwm_set_chan_level(s_slice_r, s_chan_r, level);
 }
 
 void audio_pwm_output_init(void) {
-    gpio_set_function(AUDIO_LEFT_PIN,  GPIO_FUNC_PWM);
+    gpio_set_function(AUDIO_LEFT_PIN, GPIO_FUNC_PWM);
     gpio_set_function(AUDIO_RIGHT_PIN, GPIO_FUNC_PWM);
 
     s_slice_l = pwm_gpio_to_slice_num(AUDIO_LEFT_PIN);
     s_slice_r = pwm_gpio_to_slice_num(AUDIO_RIGHT_PIN);
 
+    s_chan_l = pwm_gpio_to_channel(AUDIO_LEFT_PIN);
+    s_chan_r = pwm_gpio_to_channel(AUDIO_RIGHT_PIN);
+
     pwm_config cfg = pwm_get_default_config();
 
-    float divider = audio_pwm_calc_divider(s_sample_rate);
+    float sys_clk = (float)clock_get_hz(clk_sys);
+    float divider = sys_clk / ((float)s_sample_rate * (float)(PWM_WRAP + 1));
+
     pwm_config_set_clkdiv(&cfg, divider);
-    pwm_config_set_wrap(&cfg, PWM_WRAP - 1);
+    pwm_config_set_wrap(&cfg, PWM_WRAP);
 
     pwm_init(s_slice_l, &cfg, false);
-    pwm_init(s_slice_r, &cfg, false);
 
-    // Start both channels at mid-scale (silence).
-    pwm_set_chan_level(s_slice_l, PWM_CHAN_A, PWM_WRAP / 2);
-    pwm_set_chan_level(s_slice_r, PWM_CHAN_A, PWM_WRAP / 2);
+    if (s_slice_r != s_slice_l) {
+        pwm_init(s_slice_r, &cfg, false);
+    }
 
-    // IRQ fires once per PWM wrap = once per output sample @ SAMPLE_RATE Hz.
+    pwm_set_chan_level(s_slice_l, s_chan_l, PWM_WRAP / 2);
+    pwm_set_chan_level(s_slice_r, s_chan_r, PWM_WRAP / 2);
+
     pwm_clear_irq(s_slice_l);
     pwm_set_irq_enabled(s_slice_l, true);
+
     irq_set_exclusive_handler(PWM_IRQ_WRAP, pwm_irq_handler);
     irq_set_enabled(PWM_IRQ_WRAP, true);
 
-    // Start both slices simultaneously.
     pwm_set_mask_enabled((1u << s_slice_l) | (1u << s_slice_r));
 
     s_enabled = true;
-    s_initialized = true;
-    printf("Audio PWM output init: GP%d GP%d @ %lu Hz, wrap=%d, div=%.4f\n",
-           AUDIO_LEFT_PIN, AUDIO_RIGHT_PIN, (unsigned long)s_sample_rate, PWM_WRAP,
+
+    printf("Audio PWM output init: GP%d slice=%u chan=%u, GP%d slice=%u chan=%u @ %d Hz, wrap=%d, div=%.4f\n",
+           AUDIO_LEFT_PIN,
+           s_slice_l,
+           s_chan_l,
+           AUDIO_RIGHT_PIN,
+           s_slice_r,
+           s_chan_r,
+           s_sample_rate,
+           PWM_WRAP,
            (double)divider);
 }
 
@@ -110,32 +116,42 @@ bool audio_pwm_output_is_enabled(void) {
 }
 
 void audio_pwm_output_set_sample_rate(uint32_t sample_rate) {
-    if (sample_rate < 8000 || sample_rate > 96000) {
-        printf("Audio PWM: ignoring unsupported sample rate %lu Hz\n",
-               (unsigned long)sample_rate);
-        return;
+    if (sample_rate == 0) {
+        sample_rate = 44100;
     }
 
+    
     if (sample_rate == s_sample_rate) {
         return;
     }
 
     s_sample_rate = sample_rate;
 
-    if (!s_initialized) {
-        return;
+    pwm_config cfg = pwm_get_default_config();
+
+    float sys_clk = (float)clock_get_hz(clk_sys);
+    float divider = sys_clk / ((float)s_sample_rate * (float)(PWM_WRAP + 1));
+
+    pwm_config_set_clkdiv(&cfg, divider);
+    pwm_config_set_wrap(&cfg, PWM_WRAP);
+
+    bool was_enabled = s_enabled;
+    s_enabled = false;
+
+    pwm_init(s_slice_l, &cfg, false);
+
+    if (s_slice_r != s_slice_l) {
+        pwm_init(s_slice_r, &cfg, false);
     }
 
-    float divider = audio_pwm_calc_divider(s_sample_rate);
+    pwm_set_chan_level(s_slice_l, s_chan_l, PWM_WRAP / 2);
+    pwm_set_chan_level(s_slice_r, s_chan_r, PWM_WRAP / 2);
 
-    pwm_set_clkdiv(s_slice_l, divider);
-    pwm_set_clkdiv(s_slice_r, divider);
+    pwm_set_mask_enabled((1u << s_slice_l) | (1u << s_slice_r));
 
-    printf("Audio PWM: sample rate set to %lu Hz, div=%.4f\n",
+    s_enabled = was_enabled;
+
+    printf("PWM sample rate changed to %lu Hz, div=%.4f\n",
            (unsigned long)s_sample_rate,
            (double)divider);
-}
-
-uint32_t audio_pwm_output_get_sample_rate(void) {
-    return s_sample_rate;
 }

@@ -372,7 +372,7 @@ static void fallback_timer_handler(btstack_timer_source_t *ts) {
         }
     }
 
-    btstack_run_loop_set_timer(ts, 5);
+    btstack_run_loop_set_timer(ts, 8);
     btstack_run_loop_add_timer(ts);
 }
 
@@ -554,7 +554,6 @@ int main(void) {
 
     printf("Trying SD WAV playlist...\n");
     printf("MAIN DEBUG: about to init SD playlist\n");
-
     sd_spi_probe_run();
     
     g_sd_wav_ready = sd_wav_fallback_init_playlist();
