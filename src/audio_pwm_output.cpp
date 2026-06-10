@@ -10,11 +10,18 @@
 #define AUDIO_LEFT_PIN   26
 #define AUDIO_RIGHT_PIN  27
 #define SAMPLE_RATE      44100
-#define PWM_WRAP         2047
 
-// Lower volume to reduce clipping/wobble through PAM8403.
-// Try 4 first. If too quiet, change to 2.
-#define VOLUME_DIVIDER   4
+// PWM_WRAP 3999 gives ~12-bit resolution (4000 levels).
+// Requires the system clock to be overclocked to 200 MHz in main() via
+// set_sys_clock_khz(200000, true) before audio_pwm_output_init() is called.
+// At 200 MHz: 200,000,000 / (4000 * 44100) = 1.134 — valid divider.
+// At default 150 MHz this would underflow, so the overclock is mandatory.
+#define PWM_WRAP         3999
+
+// Dividing by 2 instead of 4 keeps one extra bit of dynamic range.
+// If the PAM8403 clips, turn down the amp's physical volume pot rather than
+// throwing away bits here in firmware.
+#define VOLUME_DIVIDER   2
 
 static bool s_enabled = false;
 
@@ -47,8 +54,13 @@ static void pwm_irq_handler(void) {
 
     sample = sample / VOLUME_DIVIDER;
 
-    uint16_t level =
-        (uint16_t)(((int32_t)sample + 32768) * PWM_WRAP / 65535);
+    // Map [-32768, 32767] to [0, PWM_WRAP].
+    // Use >> 16 (divide by 65536) instead of / 65535 to avoid integer
+    // truncation error at the top of the range, and cast through uint32_t
+    // to keep the multiply from overflowing on large PWM_WRAP values.
+    uint16_t level = (uint16_t)(
+        ((int32_t)sample + 32768) * (uint32_t)(PWM_WRAP + 1) >> 16
+    );
 
     if (level > PWM_WRAP) {
         level = PWM_WRAP;

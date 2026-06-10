@@ -145,3 +145,23 @@ AudioSource audio_buf_get_source(void) {
 bool audio_buf_has_data(void) {
     return has_data;
 }
+
+uint32_t audio_buf_samples_available(void) {
+    critical_section_enter_blocking(&audio_cs);
+
+    uint32_t count = samples_available;
+
+    critical_section_exit(&audio_cs);
+
+    return count;
+}
+
+uint32_t audio_buf_free_space(void) {
+    critical_section_enter_blocking(&audio_cs);
+
+    uint32_t free_count = AUDIO_BUFFER_SIZE - samples_available;
+
+    critical_section_exit(&audio_cs);
+
+    return free_count;
+}

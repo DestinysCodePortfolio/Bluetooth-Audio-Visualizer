@@ -1,4 +1,3 @@
-
 #include "sd_spi_probe.h"
 
 #include <stdio.h>
@@ -9,6 +8,7 @@
 #include "pico/cyw43_arch.h"
 #include "pico/multicore.h"
 #include "hardware/gpio.h"
+#include "hardware/clocks.h"
 
 #include "btstack.h"
 #include "classic/btstack_sbc.h"
@@ -327,21 +327,6 @@ static void a2dp_media_handler(uint8_t seid,
 
 static void fallback_timer_handler(btstack_timer_source_t *ts) {
     uint32_t t = now_ms();
-
-    // Raw button debug: not pressed = 1, pressed = 0.
-    static uint32_t last_button_debug_ms = 0;
-    if (t - last_button_debug_ms > 1000) {
-        last_button_debug_ms = t;
-        printf("BTN RAW: GP%d=%d GP%d=%d GP%d=%d\n",
-               BTN_PAUSE_PIN,
-               gpio_get(BTN_PAUSE_PIN),
-               BTN_NEXT_PIN,
-               gpio_get(BTN_NEXT_PIN),
-               BTN_PREV_PIN,
-               gpio_get(BTN_PREV_PIN));
-    }
-
-    // Button polling: active-low with internal pull-up.
     if (!gpio_get(BTN_PAUSE_PIN) && (t - last_pause_press_ms > BTN_DEBOUNCE_MS)) {
         last_pause_press_ms = t;
         handle_pause_button();
@@ -520,6 +505,11 @@ void core1_entry(void) {
 // ------------------------------------------------------------
 
 int main(void) {
+    // Overclock to 200 MHz for higher PWM resolution.
+    // PWM_WRAP=3999 requires sys_clk >= 200 MHz to keep the PWM divider above
+    // 1.0 at 44100 Hz.  The RP2350 (Pico 2W) is rated for this speed.
+    set_sys_clock_khz(200000, true);
+
     stdio_init_all();
     sleep_ms(10000);
 

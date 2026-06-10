@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -58,6 +59,10 @@ void        audio_buf_stop(void);
 
 AudioSource audio_buf_get_source(void);
 bool        audio_buf_has_data(void);
+
+uint32_t audio_buf_samples_available(void);
+uint32_t audio_buf_free_space(void);
+
 
 #ifdef __cplusplus
 }

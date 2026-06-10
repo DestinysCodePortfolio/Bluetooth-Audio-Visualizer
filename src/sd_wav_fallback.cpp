@@ -16,12 +16,10 @@
 #define SD_SCK_PIN  14
 #define SD_MOSI_PIN 15
 // Number of mono samples pushed to the audio buffer per sd_wav_fallback_task()
-// call.  The PWM IRQ consumes samples at 44100 Hz; the task is called roughly
-// every 5–20 ms depending on the run-loop.  512 samples ≈ 11.6 ms @ 44.1 kHz,
-// giving comfortable headroom with the now-larger 8192-sample ring buffer.
-// The old value (256 ≈ 5.8 ms) was less than one task period, so the buffer
-// starved on almost every cycle.
-#define WAV_BLOCK_SAMPLES 512
+// call.  1024 samples ≈ 23 ms @ 44.1 kHz.  The BTstack timer fires every 8 ms,
+// so this gives ~3x headroom per tick and keeps the 8192-sample ring buffer
+// comfortably full without starving the PWM IRQ.
+#define WAV_BLOCK_SAMPLES 1024
 
 static FATFS fs;
 static FIL wav_file;
