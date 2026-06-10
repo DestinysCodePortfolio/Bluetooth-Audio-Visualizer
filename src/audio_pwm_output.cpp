@@ -10,7 +10,9 @@
 
 #define AUDIO_LEFT_PIN   26
 #define AUDIO_RIGHT_PIN  27
-#define SAMPLE_RATE      44100
+#define DEFAULT_SAMPLE_RATE 44100
+#define OUTPUT_GAIN_NUM     2
+#define OUTPUT_GAIN_DEN     3
 
 // PWM wrap value chosen as a power-of-two for simple int16 -> level mapping.
 // sys_clock / (divider * PWM_WRAP) = SAMPLE_RATE
@@ -18,8 +20,27 @@
 #define PWM_WRAP         2048
 
 static bool s_enabled = false;
+static bool s_initialized = false;
+static uint32_t s_sample_rate = DEFAULT_SAMPLE_RATE;
 static uint s_slice_l;
 static uint s_slice_r;
+
+static float audio_pwm_calc_divider(uint32_t sample_rate) {
+    float sys_clk = (float)clock_get_hz(clk_sys);
+    return sys_clk / ((float)sample_rate * PWM_WRAP);
+}
+
+static int16_t audio_pwm_condition_sample(int16_t sample) {
+    int32_t shaped = ((int32_t)sample * OUTPUT_GAIN_NUM) / OUTPUT_GAIN_DEN;
+
+    if (shaped > 32767) {
+        shaped = 32767;
+    } else if (shaped < -32768) {
+        shaped = -32768;
+    }
+
+    return (int16_t)shaped;
+}
 
 static void pwm_irq_handler(void) {
     // Clear the interrupt on the left slice (right follows the same clock).
@@ -35,7 +56,7 @@ static void pwm_irq_handler(void) {
     // cursor.  The old code called audio_buf_copy_latest() which always
     // returned the newest sample — meaning every IRQ replayed the same value
     // instead of streaming forward through the buffer.
-    int16_t sample = audio_buf_read_one();
+    int16_t sample = audio_pwm_condition_sample(audio_buf_read_one());
 
     // Map int16 [-32768, 32767] → [0, PWM_WRAP]
     uint16_t level = (uint16_t)(((int32_t)sample + 32768) * PWM_WRAP / 65536);
@@ -53,8 +74,7 @@ void audio_pwm_output_init(void) {
 
     pwm_config cfg = pwm_get_default_config();
 
-    float sys_clk = (float)clock_get_hz(clk_sys);
-    float divider  = sys_clk / (SAMPLE_RATE * PWM_WRAP);
+    float divider = audio_pwm_calc_divider(s_sample_rate);
     pwm_config_set_clkdiv(&cfg, divider);
     pwm_config_set_wrap(&cfg, PWM_WRAP - 1);
 
@@ -75,8 +95,9 @@ void audio_pwm_output_init(void) {
     pwm_set_mask_enabled((1u << s_slice_l) | (1u << s_slice_r));
 
     s_enabled = true;
-    printf("Audio PWM output init: GP%d GP%d @ %d Hz, wrap=%d, div=%.4f\n",
-           AUDIO_LEFT_PIN, AUDIO_RIGHT_PIN, SAMPLE_RATE, PWM_WRAP,
+    s_initialized = true;
+    printf("Audio PWM output init: GP%d GP%d @ %lu Hz, wrap=%d, div=%.4f\n",
+           AUDIO_LEFT_PIN, AUDIO_RIGHT_PIN, (unsigned long)s_sample_rate, PWM_WRAP,
            (double)divider);
 }
 
@@ -86,4 +107,35 @@ void audio_pwm_output_set_enabled(bool e) {
 
 bool audio_pwm_output_is_enabled(void) {
     return s_enabled;
+}
+
+void audio_pwm_output_set_sample_rate(uint32_t sample_rate) {
+    if (sample_rate < 8000 || sample_rate > 96000) {
+        printf("Audio PWM: ignoring unsupported sample rate %lu Hz\n",
+               (unsigned long)sample_rate);
+        return;
+    }
+
+    if (sample_rate == s_sample_rate) {
+        return;
+    }
+
+    s_sample_rate = sample_rate;
+
+    if (!s_initialized) {
+        return;
+    }
+
+    float divider = audio_pwm_calc_divider(s_sample_rate);
+
+    pwm_set_clkdiv(s_slice_l, divider);
+    pwm_set_clkdiv(s_slice_r, divider);
+
+    printf("Audio PWM: sample rate set to %lu Hz, div=%.4f\n",
+           (unsigned long)s_sample_rate,
+           (double)divider);
+}
+
+uint32_t audio_pwm_output_get_sample_rate(void) {
+    return s_sample_rate;
 }

@@ -271,14 +271,44 @@ static void sbc_decoded_handler(int16_t *pcm_data,
                                 void *context) {
     (void)context;
 
+    if (!pcm_data || num_audio_frames <= 0 || num_channels <= 0) {
+        return;
+    }
+
     bluetooth_streaming = true;
     last_bt_audio_ms    = now_ms();
 
-    audio_buf_push(
-        pcm_data,
-        (uint32_t)num_audio_frames,
-        AUDIO_SRC_BLUETOOTH
-    );
+    audio_pwm_output_set_sample_rate((uint32_t)sample_rate);
+
+    static int16_t mono_block[256];
+    int frames_done = 0;
+
+    while (frames_done < num_audio_frames) {
+        int frames_this_block = num_audio_frames - frames_done;
+
+        if (frames_this_block > (int)(sizeof(mono_block) / sizeof(mono_block[0]))) {
+            frames_this_block = sizeof(mono_block) / sizeof(mono_block[0]);
+        }
+
+        for (int frame = 0; frame < frames_this_block; frame++) {
+            int32_t sum = 0;
+            int base = (frames_done + frame) * num_channels;
+
+            for (int ch = 0; ch < num_channels; ch++) {
+                sum += pcm_data[base + ch];
+            }
+
+            mono_block[frame] = (int16_t)(sum / num_channels);
+        }
+
+        audio_buf_push(
+            mono_block,
+            (uint32_t)frames_this_block,
+            AUDIO_SRC_BLUETOOTH
+        );
+
+        frames_done += frames_this_block;
+    }
 
     total_frames_decoded  += 1;
     total_samples_decoded += (uint32_t)num_audio_frames;
