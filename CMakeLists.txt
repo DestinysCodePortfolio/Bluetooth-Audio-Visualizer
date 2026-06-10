@@ -69,6 +69,7 @@ add_executable(bt_visualizer
     src/spi_display.cpp
     src/cs122_app.cpp
     src/lvgl_oscilloscope.cpp
+
 )
 
 pico_set_program_name(bt_visualizer "BTVisualizer")
@@ -98,10 +99,13 @@ target_link_libraries(bt_visualizer
     pico_btstack_flash_bank
     pico_btstack_sbc_decoder
     hardware_spi
-    hardware_pwm
     lvgl
     pico_fatfs
     m
+    hardware_pwm
+    hardware_irq
+    hardware_clocks
+    
 )
 
 pico_add_extra_outputs(bt_visualizer)

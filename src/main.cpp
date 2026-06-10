@@ -44,9 +44,9 @@
 // Button config
 // ------------------------------------------------------------
 
-#define BTN_PAUSE_PIN   13
-#define BTN_NEXT_PIN    14
-#define BTN_PREV_PIN    15
+#define BTN_PAUSE_PIN   3
+#define BTN_NEXT_PIN    4
+#define BTN_PREV_PIN    8
 #define BTN_DEBOUNCE_MS 250
 #define TEST_SD_ONLY 1
 // ------------------------------------------------------------
@@ -502,7 +502,7 @@ void core1_entry(void) {
 
 int main(void) {
     stdio_init_all();
-    sleep_ms(2000);
+    sleep_ms(10000);
 
     printf("\n=== BTVisualizer ===\n");
 
