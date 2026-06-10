@@ -2,6 +2,7 @@
 #define AUDIO_PWM_OUTPUT_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -10,6 +11,8 @@ extern "C" {
 void audio_pwm_output_init(void);
 void audio_pwm_output_set_enabled(bool enabled);
 bool audio_pwm_output_is_enabled(void);
+void audio_pwm_output_set_sample_rate(uint32_t sample_rate);
+uint32_t audio_pwm_output_get_sample_rate(void);
 
 #ifdef __cplusplus
 }

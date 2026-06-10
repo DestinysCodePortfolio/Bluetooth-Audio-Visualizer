@@ -7,6 +7,7 @@
 #include "pico/stdlib.h"
 #include "hardware/spi.h"
 #include "audio_buffer.h"
+#include "audio_pwm_output.h"
 #include "ff.h"
 #include "tf_card.h"
 
@@ -288,6 +289,10 @@ bool sd_wav_fallback_init_playlist(void) {
 
 void sd_wav_fallback_set_enabled(bool en) {
     enabled = en;
+
+    if (enabled && mounted && file_open && wav_sample_rate > 0) {
+        audio_pwm_output_set_sample_rate(wav_sample_rate);
+    }
 
     if (!enabled) {
         audio_buf_stop();
