@@ -238,6 +238,7 @@ bool sd_wav_fallback_init(const char *filename) {
 
 bool sd_wav_fallback_init_playlist(void) {
     playlist_index = 0;
+    printf("SD WAV: playlist init, first file = %s\n", playlist[playlist_index]);
     return sd_wav_fallback_init(playlist[playlist_index]);
 }
 

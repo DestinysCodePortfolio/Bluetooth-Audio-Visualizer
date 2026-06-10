@@ -8,16 +8,15 @@
 //
 // Fallback:
 //   SD WAV playlist -> sd_wav_fallback_task() -> audio_buf_push() -> LVGL / PWM
-//   Generated audio  -> fallback_audio_task()    -> audio_buf_push() -> LVGL / PWM
 //
-// Buttons are local fallback controls only:
-//   GP13 = Pause / Play SD or generated fallback
+// Buttons are local SD fallback controls only:
+//   GP13 = Pause / Play SD fallback
 //   GP14 = Next SD WAV file
 //   GP15 = Previous SD WAV file
 //
 // Important:
-//   This file does NOT enable AVRCP controller because that broke Spotify/A2DP
-//   connection behavior on the phone. Bluetooth audio is controlled from the phone.
+//   This file does NOT enable AVRCP controller because that broke Spotify/A2DP.
+//   Bluetooth audio is controlled from the phone.
 
 #include <stdio.h>
 #include <string.h>
@@ -49,7 +48,7 @@
 #define BTN_NEXT_PIN    14
 #define BTN_PREV_PIN    15
 #define BTN_DEBOUNCE_MS 250
-
+#define TEST_SD_ONLY 1
 // ------------------------------------------------------------
 // Bluetooth stream status
 // ------------------------------------------------------------
@@ -165,9 +164,9 @@ static void start_best_fallback(void) {
         sd_wav_fallback_set_enabled(true);
         fallback_audio_set_enabled(false);
     } else {
-        printf("Fallback: using generated audio\n");
+        printf("Fallback: SD not ready, generated fallback muted\n");
         sd_wav_fallback_set_enabled(false);
-        fallback_audio_set_enabled(true);
+        fallback_audio_set_enabled(false);
     }
 }
 
@@ -178,7 +177,7 @@ static void stop_audio_and_resume_fallback(void) {
 }
 
 // ------------------------------------------------------------
-// Local button controls: SD/generated fallback only
+// Local button controls: SD fallback only
 // ------------------------------------------------------------
 
 static void handle_pause_button(void) {
@@ -187,16 +186,22 @@ static void handle_pause_button(void) {
         return;
     }
 
+    if (!g_sd_wav_ready) {
+        printf("BTN: SD not ready, pause ignored\n");
+        return;
+    }
+
     g_paused = !g_paused;
 
     if (g_paused) {
-        printf("BTN: SD/fallback pause\n");
+        printf("BTN: SD pause\n");
         sd_wav_fallback_set_enabled(false);
         fallback_audio_set_enabled(false);
         audio_buf_stop();
     } else {
-        printf("BTN: SD/fallback play\n");
-        start_best_fallback();
+        printf("BTN: SD play/resume: %s\n", sd_wav_fallback_current_file());
+        sd_wav_fallback_set_enabled(true);
+        fallback_audio_set_enabled(false);
     }
 }
 
@@ -207,7 +212,7 @@ static void handle_next_button(void) {
     }
 
     if (!g_sd_wav_ready) {
-        printf("BTN: generated fallback has no next track\n");
+        printf("BTN: SD not ready, no next track\n");
         return;
     }
 
@@ -220,9 +225,9 @@ static void handle_next_button(void) {
         printf("Now playing SD: %s\n", sd_wav_fallback_current_file());
         sd_wav_fallback_set_enabled(true);
     } else {
-        printf("SD next failed, using generated fallback\n");
+        printf("SD next failed; muting fallback\n");
         sd_wav_fallback_set_enabled(false);
-        fallback_audio_set_enabled(true);
+        fallback_audio_set_enabled(false);
     }
 }
 
@@ -233,7 +238,7 @@ static void handle_prev_button(void) {
     }
 
     if (!g_sd_wav_ready) {
-        printf("BTN: generated fallback has no previous track\n");
+        printf("BTN: SD not ready, no previous track\n");
         return;
     }
 
@@ -246,9 +251,9 @@ static void handle_prev_button(void) {
         printf("Now playing SD: %s\n", sd_wav_fallback_current_file());
         sd_wav_fallback_set_enabled(true);
     } else {
-        printf("SD previous failed, using generated fallback\n");
+        printf("SD previous failed; muting fallback\n");
         sd_wav_fallback_set_enabled(false);
-        fallback_audio_set_enabled(true);
+        fallback_audio_set_enabled(false);
     }
 }
 
@@ -264,7 +269,7 @@ static void sbc_decoded_handler(int16_t *pcm_data,
     (void)context;
 
     bluetooth_streaming = true;
-    last_bt_audio_ms = now_ms();
+    last_bt_audio_ms    = now_ms();
 
     audio_buf_push(
         pcm_data,
@@ -272,10 +277,10 @@ static void sbc_decoded_handler(int16_t *pcm_data,
         AUDIO_SRC_BLUETOOTH
     );
 
-    total_frames_decoded += 1;
+    total_frames_decoded  += 1;
     total_samples_decoded += (uint32_t)num_audio_frames;
-    last_sample_rate = sample_rate;
-    last_channels = num_channels;
+    last_sample_rate       = sample_rate;
+    last_channels          = num_channels;
 }
 
 // ------------------------------------------------------------
@@ -287,7 +292,7 @@ static void a2dp_media_handler(uint8_t seid,
                                uint16_t size) {
     (void)seid;
 
-    // 12-byte RTP header + 1-byte SBC payload header = 13 bytes.
+    // 12-byte RTP header + 1-byte SBC payload header = 13 bytes
     if (size < 13) {
         return;
     }
@@ -309,30 +314,26 @@ static void fallback_timer_handler(btstack_timer_source_t *ts) {
 
     // Raw button debug: not pressed = 1, pressed = 0.
     static uint32_t last_button_debug_ms = 0;
-
     if (t - last_button_debug_ms > 1000) {
         last_button_debug_ms = t;
-
         printf("BTN RAW: GP13=%d GP14=%d GP15=%d\n",
                gpio_get(BTN_PAUSE_PIN),
                gpio_get(BTN_NEXT_PIN),
                gpio_get(BTN_PREV_PIN));
     }
 
-    if (!gpio_get(BTN_PAUSE_PIN) &&
-        (t - last_pause_press_ms > BTN_DEBOUNCE_MS)) {
+    // Button polling: active-low with internal pull-up.
+    if (!gpio_get(BTN_PAUSE_PIN) && (t - last_pause_press_ms > BTN_DEBOUNCE_MS)) {
         last_pause_press_ms = t;
         handle_pause_button();
     }
 
-    if (!gpio_get(BTN_NEXT_PIN) &&
-        (t - last_next_press_ms > BTN_DEBOUNCE_MS)) {
+    if (!gpio_get(BTN_NEXT_PIN) && (t - last_next_press_ms > BTN_DEBOUNCE_MS)) {
         last_next_press_ms = t;
         handle_next_button();
     }
 
-    if (!gpio_get(BTN_PREV_PIN) &&
-        (t - last_prev_press_ms > BTN_DEBOUNCE_MS)) {
+    if (!gpio_get(BTN_PREV_PIN) && (t - last_prev_press_ms > BTN_DEBOUNCE_MS)) {
         last_prev_press_ms = t;
         handle_prev_button();
     }
@@ -343,7 +344,7 @@ static void fallback_timer_handler(btstack_timer_source_t *ts) {
         stop_audio_and_resume_fallback();
     }
 
-    // Run fallback only when Bluetooth is not actively producing samples.
+    // Fallback tasks.
     if (!bluetooth_streaming && !g_paused) {
         if (g_sd_wav_ready && sd_wav_fallback_is_enabled()) {
             sd_wav_fallback_task();
@@ -377,17 +378,14 @@ static void packet_handler(uint8_t packet_type,
         case BTSTACK_EVENT_STATE:
             if (btstack_event_state_get_state(packet) == HCI_STATE_WORKING) {
                 printf("BT ready - discoverable as BTVisualizer\n");
-
                 gap_discoverable_control(1);
                 gap_connectable_control(1);
-
                 start_best_fallback();
             }
             break;
 
         case HCI_EVENT_PIN_CODE_REQUEST: {
             printf("PIN code request - using 0000\n");
-
             bd_addr_t bd_addr;
             hci_event_pin_code_request_get_bd_addr(packet, bd_addr);
             gap_pin_code_response(bd_addr, "0000");
@@ -396,7 +394,6 @@ static void packet_handler(uint8_t packet_type,
 
         case HCI_EVENT_USER_CONFIRMATION_REQUEST: {
             printf("SSP confirm - auto accept\n");
-
             bd_addr_t bd_addr;
             hci_event_user_confirmation_request_get_bd_addr(packet, bd_addr);
             gap_ssp_confirmation_response(bd_addr);
@@ -416,10 +413,8 @@ static void packet_handler(uint8_t packet_type,
         case HCI_EVENT_DISCONNECTION_COMPLETE:
             printf("Disconnected, reason: 0x%02x\n",
                    hci_event_disconnection_complete_get_reason(packet));
-
             g_paused = false;
             stop_audio_and_resume_fallback();
-
             gap_discoverable_control(1);
             gap_connectable_control(1);
             break;
@@ -430,23 +425,19 @@ static void packet_handler(uint8_t packet_type,
             switch (subevent) {
                 case A2DP_SUBEVENT_STREAM_STARTED:
                     printf("A2DP: stream STARTED\n");
-
                     bluetooth_streaming = true;
                     last_bt_audio_ms = now_ms();
                     g_paused = false;
-
                     stop_all_fallbacks();
                     break;
 
                 case A2DP_SUBEVENT_STREAM_SUSPENDED:
                     printf("A2DP: stream SUSPENDED\n");
-                    bluetooth_streaming = false;
                     stop_audio_and_resume_fallback();
                     break;
 
                 case A2DP_SUBEVENT_STREAM_RELEASED:
                     printf("A2DP: stream RELEASED\n");
-                    bluetooth_streaming = false;
                     stop_audio_and_resume_fallback();
                     break;
 
@@ -454,7 +445,6 @@ static void packet_handler(uint8_t packet_type,
                     printf("A2DP event subcode: 0x%02x\n", subevent);
                     break;
             }
-
             break;
         }
 
@@ -470,12 +460,12 @@ static void packet_handler(uint8_t packet_type,
 static void stats_timer_handler(btstack_timer_source_t *ts) {
     static uint32_t last_samples = 0;
 
-    uint32_t now = total_samples_decoded;
+    uint32_t now   = total_samples_decoded;
     uint32_t delta = now - last_samples;
-    last_samples = now;
+    last_samples   = now;
 
     if (delta > 0) {
-        printf("[stats] BT %lu samples/s, %lu Hz, %d ch, frames=%lu\n",
+        printf("[stats] BT %lu samples/s, %lu Hz, %d ch, total frames=%lu\n",
                (unsigned long)delta,
                (unsigned long)last_sample_rate,
                last_channels,
@@ -483,8 +473,7 @@ static void stats_timer_handler(btstack_timer_source_t *ts) {
     } else if (g_paused) {
         printf("[stats] paused\n");
     } else if (g_sd_wav_ready && sd_wav_fallback_is_enabled()) {
-        printf("[stats] SD WAV active: %s\n",
-               sd_wav_fallback_current_file());
+        printf("[stats] SD WAV active: %s\n", sd_wav_fallback_current_file());
     } else if (fallback_audio_is_enabled()) {
         printf("[stats] generated fallback active\n");
     } else {
@@ -517,7 +506,7 @@ int main(void) {
 
     printf("\n=== BTVisualizer ===\n");
 
-    // Button setup.
+    // GPIO button setup: active-low, internal pull-up.
     const uint btn_pins[] = {
         BTN_PAUSE_PIN,
         BTN_NEXT_PIN,
@@ -544,18 +533,24 @@ int main(void) {
     fallback_audio_init();
     audio_pwm_output_init();
 
-    // SD playlist fallback. Expected files are song1.wav ... song5.wav.
+    printf("Trying SD WAV playlist...\n");
+    printf("MAIN DEBUG: about to init SD playlist\n");
+    
     g_sd_wav_ready = sd_wav_fallback_init_playlist();
-
+   
+    printf("MAIN DEBUG: sd_wav_fallback_init_playlist returned %d\n", g_sd_wav_ready);
+    
     if (g_sd_wav_ready) {
         printf("SD WAV playlist ready: %s\n", sd_wav_fallback_current_file());
         sd_wav_fallback_set_enabled(true);
         fallback_audio_set_enabled(false);
     } else {
-        printf("SD WAV fallback failed, generated fallback will be used\n");
+        printf("ERROR: SD WAV fallback failed. Generated fallback muted.\n");
         sd_wav_fallback_set_enabled(false);
-        fallback_audio_set_enabled(true);
+        fallback_audio_set_enabled(false);
     }
+
+    start_best_fallback();
 
     // Display + oscilloscope.
     static ucr::bcoe::SPIDisplay spi_display(480, 272, 10000000, 20);
@@ -570,6 +565,7 @@ int main(void) {
     );
 
     g_scope = &scope;
+
     multicore_launch_core1(core1_entry);
 
     // BTstack setup.
@@ -603,7 +599,6 @@ int main(void) {
     printf("Stream endpoint registered\n");
 
     memset(sdp_a2dp_sink_buffer, 0, sizeof(sdp_a2dp_sink_buffer));
-
     a2dp_sink_create_sdp_record(
         sdp_a2dp_sink_buffer,
         sdp_create_service_record_handle(),
@@ -611,16 +606,13 @@ int main(void) {
         NULL,
         NULL
     );
-
     sdp_register_service(sdp_a2dp_sink_buffer);
 
-    // AVRCP target only.
-    // Do NOT enable AVRCP controller here; it made Spotify/A2DP unreliable.
+    // AVRCP target only. Do not add AVRCP controller.
     avrcp_init();
     avrcp_target_init();
 
     memset(sdp_avrcp_buffer, 0, sizeof(sdp_avrcp_buffer));
-
     avrcp_target_create_sdp_record(
         sdp_avrcp_buffer,
         sdp_create_service_record_handle(),
@@ -628,10 +620,7 @@ int main(void) {
         NULL,
         NULL
     );
-
     sdp_register_service(sdp_avrcp_buffer);
-
-    printf("AVRCP target initialized; buttons control SD/fallback only\n");
 
     // SBC decoder.
     btstack_sbc_decoder_init(
@@ -655,13 +644,28 @@ int main(void) {
     btstack_run_loop_set_timer(&stats_timer, 1000);
     btstack_run_loop_add_timer(&stats_timer);
 
-    // Fallback + buttons timer.
+    // Fallback + button polling timer.
     fallback_timer.process = &fallback_timer_handler;
     btstack_run_loop_set_timer(&fallback_timer, 20);
     btstack_run_loop_add_timer(&fallback_timer);
+    
+    #if TEST_SD_ONLY
+    printf("TEST_SD_ONLY mode: Bluetooth disabled.\n");
+    while (true) {
+        if (!g_paused) {
+            if (g_sd_wav_ready && sd_wav_fallback_is_enabled()) {
+                sd_wav_fallback_task();
+            } else if (fallback_audio_is_enabled()) {
+                fallback_audio_task();
+            }
+        }
 
+        sleep_ms(5);
+    }
+    #else
     hci_power_control(HCI_POWER_ON);
     btstack_run_loop_execute();
+    #endif
 
     return 0;
 }
