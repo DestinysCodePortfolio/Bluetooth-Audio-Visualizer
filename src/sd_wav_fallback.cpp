@@ -9,6 +9,11 @@
 #include "audio_buffer.h"
 #include "ff.h"
 #include "tf_card.h"
+
+#define SD_MISO_PIN 12
+#define SD_CS_PIN   13
+#define SD_SCK_PIN  14
+#define SD_MOSI_PIN 15
 // Number of mono samples pushed to the audio buffer per sd_wav_fallback_task()
 // call.  The PWM IRQ consumes samples at 44100 Hz; the task is called roughly
 // every 5–20 ms depending on the run-loop.  512 samples ≈ 11.6 ms @ 44.1 kHz,
@@ -228,22 +233,26 @@ bool sd_wav_fallback_init(const char *filename) {
             spi1,              // SPI hardware instance
             CLK_SLOW_DEFAULT,  // slow clock for SD init
             10 * MHZ,          // faster clock after init
-            12,                // MISO = GP12
-            13,                // CS   = GP13
-            14,                // SCK  = GP14
-            15,                // MOSI = GP15
+            SD_MISO_PIN,       // MISO = GP12, physical pin 16
+            SD_CS_PIN,         // CS   = GP13, physical pin 17
+            SD_SCK_PIN,        // SCK  = GP14, physical pin 19
+            SD_MOSI_PIN,       // MOSI = GP15, physical pin 20
             true               // internal pullups
         };
 
         bool using_hw_spi = pico_fatfs_set_config(&config);
 
-        printf("SD config: %s, MISO=GP12 CS=GP13 SCK=GP14 MOSI=GP15\n",
-               using_hw_spi ? "hardware SPI1" : "PIO SPI");
+        printf("SD config: %s, MISO=GP%d CS=GP%d SCK=GP%d MOSI=GP%d\n",
+               using_hw_spi ? "hardware SPI1" : "PIO SPI",
+               SD_MISO_PIN,
+               SD_CS_PIN,
+               SD_SCK_PIN,
+               SD_MOSI_PIN);
 
         // Force SD chip-select inactive before mount
-        gpio_init(13);
-        gpio_set_dir(13, GPIO_OUT);
-        gpio_put(13, 1);
+        gpio_init(SD_CS_PIN);
+        gpio_set_dir(SD_CS_PIN, GPIO_OUT);
+        gpio_put(SD_CS_PIN, 1);
         sleep_ms(20);
 
         sd_config_done = true;

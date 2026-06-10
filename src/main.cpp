@@ -10,9 +10,9 @@
 //   SD WAV playlist -> sd_wav_fallback_task() -> audio_buf_push() -> LVGL / PWM
 //
 // Buttons are local SD fallback controls only:
-//   GP13 = Pause / Play SD fallback
-//   GP14 = Next SD WAV file
-//   GP15 = Previous SD WAV file
+//   GP3 = Pause / Play SD fallback, physical pin 5
+//   GP4 = Next SD WAV file, physical pin 6
+//   GP8 = Previous SD WAV file, physical pin 11
 //
 // Important:
 //   This file does NOT enable AVRCP controller because that broke Spotify/A2DP.
@@ -48,7 +48,10 @@
 #define BTN_NEXT_PIN    4
 #define BTN_PREV_PIN    8
 #define BTN_DEBOUNCE_MS 250
-#define TEST_SD_ONLY 1
+
+#ifndef TEST_SD_ONLY
+#define TEST_SD_ONLY 0
+#endif
 // ------------------------------------------------------------
 // Bluetooth stream status
 // ------------------------------------------------------------
@@ -316,9 +319,12 @@ static void fallback_timer_handler(btstack_timer_source_t *ts) {
     static uint32_t last_button_debug_ms = 0;
     if (t - last_button_debug_ms > 1000) {
         last_button_debug_ms = t;
-        printf("BTN RAW: GP13=%d GP14=%d GP15=%d\n",
+        printf("BTN RAW: GP%d=%d GP%d=%d GP%d=%d\n",
+               BTN_PAUSE_PIN,
                gpio_get(BTN_PAUSE_PIN),
+               BTN_NEXT_PIN,
                gpio_get(BTN_NEXT_PIN),
+               BTN_PREV_PIN,
                gpio_get(BTN_PREV_PIN));
     }
 
@@ -663,6 +669,7 @@ int main(void) {
         sleep_ms(5);
     }
     #else
+    printf("Combined mode: Bluetooth enabled, SD WAV used as fallback.\n");
     hci_power_control(HCI_POWER_ON);
     btstack_run_loop_execute();
     #endif
