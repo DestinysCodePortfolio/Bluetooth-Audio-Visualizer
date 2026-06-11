@@ -1,4 +1,3 @@
-
 #include "sd_spi_probe.h"
 
 #include <stdio.h>
@@ -9,6 +8,7 @@
 #include "pico/cyw43_arch.h"
 #include "pico/multicore.h"
 #include "hardware/gpio.h"
+#include "hardware/clocks.h"
 
 #include "btstack.h"
 #include "classic/btstack_sbc.h"
@@ -30,6 +30,7 @@
 #define BTN_PAUSE_PIN   3
 #define BTN_NEXT_PIN    4
 #define BTN_PREV_PIN    8
+#define BTN_VIS_PIN     5   // new button: switch SCOPE/BARS visualizer modes
 #define BTN_DEBOUNCE_MS 250
 
 #ifndef TEST_SD_ONLY
@@ -52,6 +53,7 @@ static bool g_sd_wav_ready = false;
 static uint32_t last_pause_press_ms = 0;
 static uint32_t last_next_press_ms  = 0;
 static uint32_t last_prev_press_ms  = 0;
+static uint32_t last_vis_press_ms   = 0;
 
 // ------------------------------------------------------------
 // BTstack registrations / buffers
@@ -244,6 +246,16 @@ static void handle_prev_button(void) {
 }
 
 // ------------------------------------------------------------
+// Visual mode button
+// ------------------------------------------------------------
+
+
+static void handle_visual_button(void) {
+    lvgl_visualizer_next_mode();
+    printf("BTN: visual mode -> %s\n", lvgl_visualizer_mode_name());
+}
+
+// ------------------------------------------------------------
 // SBC decoded audio handler
 // ------------------------------------------------------------
 
@@ -328,19 +340,6 @@ static void a2dp_media_handler(uint8_t seid,
 static void fallback_timer_handler(btstack_timer_source_t *ts) {
     uint32_t t = now_ms();
 
-    // Raw button debug: not pressed = 1, pressed = 0.
-    static uint32_t last_button_debug_ms = 0;
-    if (t - last_button_debug_ms > 1000) {
-        last_button_debug_ms = t;
-        printf("BTN RAW: GP%d=%d GP%d=%d GP%d=%d\n",
-               BTN_PAUSE_PIN,
-               gpio_get(BTN_PAUSE_PIN),
-               BTN_NEXT_PIN,
-               gpio_get(BTN_NEXT_PIN),
-               BTN_PREV_PIN,
-               gpio_get(BTN_PREV_PIN));
-    }
-
     // Button polling: active-low with internal pull-up.
     if (!gpio_get(BTN_PAUSE_PIN) && (t - last_pause_press_ms > BTN_DEBOUNCE_MS)) {
         last_pause_press_ms = t;
@@ -355,6 +354,11 @@ static void fallback_timer_handler(btstack_timer_source_t *ts) {
     if (!gpio_get(BTN_PREV_PIN) && (t - last_prev_press_ms > BTN_DEBOUNCE_MS)) {
         last_prev_press_ms = t;
         handle_prev_button();
+    }
+
+    if (!gpio_get(BTN_VIS_PIN) && (t - last_vis_press_ms > BTN_DEBOUNCE_MS)) {
+        last_vis_press_ms = t;
+        handle_visual_button();
     }
 
     // Bluetooth timeout watchdog.
@@ -529,19 +533,21 @@ int main(void) {
     const uint btn_pins[] = {
         BTN_PAUSE_PIN,
         BTN_NEXT_PIN,
-        BTN_PREV_PIN
+        BTN_PREV_PIN,
+        BTN_VIS_PIN
     };
 
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 4; i++) {
         gpio_init(btn_pins[i]);
         gpio_set_dir(btn_pins[i], GPIO_IN);
         gpio_pull_up(btn_pins[i]);
     }
 
-    printf("Buttons ready: GP%d=pause GP%d=next GP%d=prev\n",
+    printf("Buttons ready: GP%d=pause GP%d=next GP%d=prev GP%d=visual\n",
            BTN_PAUSE_PIN,
            BTN_NEXT_PIN,
-           BTN_PREV_PIN);
+           BTN_PREV_PIN,
+           BTN_VIS_PIN);
 
     if (cyw43_arch_init()) {
         printf("CYW43 init failed\n");
@@ -555,11 +561,11 @@ int main(void) {
     printf("Trying SD WAV playlist...\n");
     printf("MAIN DEBUG: about to init SD playlist\n");
     sd_spi_probe_run();
-    
+
     g_sd_wav_ready = sd_wav_fallback_init_playlist();
-   
+
     printf("MAIN DEBUG: sd_wav_fallback_init_playlist returned %d\n", g_sd_wav_ready);
-    
+
     if (g_sd_wav_ready) {
         printf("SD WAV playlist ready: %s\n", sd_wav_fallback_current_file());
         sd_wav_fallback_set_enabled(true);
@@ -573,7 +579,7 @@ int main(void) {
     start_best_fallback();
 
     // Display + oscilloscope.
-    static ucr::bcoe::SPIDisplay spi_display(480, 272, 10000000, 20);
+    static ucr::bcoe::SPIDisplay spi_display(480, 272, 7000000, 20);
 
     spi_display.begin();
     spi_display.clear();
@@ -668,7 +674,7 @@ int main(void) {
     fallback_timer.process = &fallback_timer_handler;
     btstack_run_loop_set_timer(&fallback_timer, 20);
     btstack_run_loop_add_timer(&fallback_timer);
-    
+
     #if TEST_SD_ONLY
     printf("TEST_SD_ONLY mode: Bluetooth disabled.\n");
     while (true) {
