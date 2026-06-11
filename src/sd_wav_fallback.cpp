@@ -16,11 +16,22 @@
 #define SD_SCK_PIN  14
 #define SD_MOSI_PIN 15
 // Number of mono samples pushed to the audio buffer per sd_wav_fallback_task()
-// call.  1024 samples ≈ 23 ms @ 44.1 kHz.  The BTstack timer fires every 8 ms,
-// so this gives ~3x headroom per tick and keeps the 8192-sample ring buffer
-// comfortably full without starving the PWM IRQ.
-#define WAV_BLOCK_SAMPLES 1024
+// call.  The PWM IRQ consumes samples at 44100 Hz; the task is called roughly
+// every 5–20 ms depending on the run-loop.  512 samples ≈ 11.6 ms @ 44.1 kHz,
+// giving comfortable headroom with the now-larger 8192-sample ring buffer.
+// The old value (256 ≈ 5.8 ms) was less than one task period, so the buffer
+// starved on almost every cycle.
+#define WAV_BLOCK_SAMPLES 512
 
+// Keep SD from overfilling the shared audio buffer.
+// This makes SD playback speed follow the PWM consumer instead of forcing
+// 512 samples into the buffer every 8 ms.
+// 4096 samples is about 93 ms at 44.1 kHz, which is enough cushion for
+// occasional SD-card read jitter without adding noticeable control latency.
+#define SD_BUFFER_TARGET_SAMPLES 4096
+#define SD_BUFFER_REFILL_MARGIN  768
+#define SD_GAIN_NUM 1
+#define SD_GAIN_DEN 1
 static FATFS fs;
 static FIL wav_file;
 
@@ -63,6 +74,34 @@ static uint32_t read_le32(const uint8_t *p) {
 static uint16_t read_le16(const uint8_t *p) {
     return ((uint16_t)p[0]) |
            ((uint16_t)p[1] << 8);
+}
+
+
+static uint32_t sd_frames_needed_now(void) {
+    uint32_t available = audio_buf_samples_available();
+
+    // Do not read more if the buffer is already comfortably filled.
+    if (available >= SD_BUFFER_TARGET_SAMPLES) {
+        return 0;
+    }
+
+    uint32_t needed = SD_BUFFER_TARGET_SAMPLES - available;
+
+    // Avoid tiny SD reads after the buffer is initially primed.
+    if (needed < SD_BUFFER_REFILL_MARGIN && available > 0) {
+        return 0;
+    }
+
+    if (needed > WAV_BLOCK_SAMPLES) {
+        needed = WAV_BLOCK_SAMPLES;
+    }
+
+    uint32_t free_space = audio_buf_free_space();
+    if (needed > free_space) {
+        needed = free_space;
+    }
+
+    return needed;
 }
 
 static bool read_exact(void *buf, UINT bytes) {
@@ -394,8 +433,13 @@ void sd_wav_fallback_task(void) {
         return;
     }
 
+    uint32_t frames_to_read = sd_frames_needed_now();
+    if (frames_to_read == 0) {
+        return;
+    }
+
     if (wav_channels == 1) {
-        UINT bytes_to_read = WAV_BLOCK_SAMPLES * sizeof(int16_t);
+        UINT bytes_to_read = frames_to_read * sizeof(int16_t);
 
         if (data_pos + bytes_to_read > data_size) {
             bytes_to_read = data_size - data_pos;
@@ -425,7 +469,7 @@ void sd_wav_fallback_task(void) {
         // Temp buffer must hold WAV_BLOCK_SAMPLES stereo frames = 2x samples.
         int16_t stereo_temp[WAV_BLOCK_SAMPLES * 2];
 
-        UINT bytes_to_read = WAV_BLOCK_SAMPLES * 2 * sizeof(int16_t);
+        UINT bytes_to_read = frames_to_read * 2 * sizeof(int16_t);
 
         if (data_pos + bytes_to_read > data_size) {
             bytes_to_read = data_size - data_pos;
