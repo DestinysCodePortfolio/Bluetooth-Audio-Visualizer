@@ -162,3 +162,13 @@ ninja
 ```
 
 Flash the generated UF2 to the Pico 2W. Open serial output to check SD mount, WAV parsing, Bluetooth status, and playback state logs.
+
+## Important Status Notes
+
+The original proposal described a full FPGA FFT spectrum analyzer with SPI PCM transfer, FPGA-side FFT, beat detection, LCD timing, and FPGA PWM audio. The current codebase instead uses the Pico 2W as the main audio and visualization controller:
+
+- The visualizer is implemented in LVGL as a 32-column PCM level display with an oscilloscope trace overlay.
+- The visualization reads directly from the shared PCM audio buffer.
+- The FPGA FFT pipeline is not fully implemented in the current software path.
+- Audio output currently comes from Pico PWM pins GP26/GP27, not FPGA PWM audio.
+ 
