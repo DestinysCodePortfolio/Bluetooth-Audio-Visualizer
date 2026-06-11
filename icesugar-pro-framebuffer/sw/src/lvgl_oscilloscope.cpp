@@ -89,7 +89,8 @@ void LVGL_Oscilloscope::build_ui(void)
     // ── Background ──────────────────────────────────────────────────────────
     lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(scr,  LV_OPA_COVER,     LV_PART_MAIN);
- 
+    lv_obj_invalidate(scr);   // <-- tell LVGL the whole screen is dirty
+    
     // ── Top bar ─────────────────────────────────────────────────────────────
     lv_obj_t *topbar = lv_obj_create(scr);
     lv_obj_set_size(topbar, SCR_W, 28);
@@ -134,7 +135,7 @@ void LVGL_Oscilloscope::build_ui(void)
  
     // Draw the initial black background + grid onto the canvas
     lv_canvas_fill_bg(canvas, lv_color_black(), LV_OPA_COVER);
- 
+    lv_obj_invalidate(canvas);   // <-- add this
     // ── Kick off the periodic redraw timer ──────────────────────────────────
     scope_timer = lv_timer_create(scope_timer_cb, SCOPE_REFRESH_MS, this);
 }
@@ -157,7 +158,7 @@ void LVGL_Oscilloscope::redraw_scope(void)
     AudioSource src = audio_buf_snapshot(snap);
  
     // ── 2. Update source label ───────────────────────────────────────────────
-    if (src == AUDIO_SRC_BLUETOOTH) {
+    /*if (src == AUDIO_SRC_BLUETOOTH) {
         lv_label_set_text(label_source, LV_SYMBOL_BLUETOOTH " BLUETOOTH");
         lv_obj_set_style_text_color(label_source,
                                     lv_color_hex(0x00CCFF), LV_PART_MAIN);
@@ -169,11 +170,19 @@ void LVGL_Oscilloscope::redraw_scope(void)
         lv_label_set_text(label_source, "NO SIGNAL");
         lv_obj_set_style_text_color(label_source,
                                     lv_color_hex(0x334433), LV_PART_MAIN);
-    }
+    }*/
+   src = AUDIO_SRC_BLUETOOTH;
+static float phase = 0.0f;
+for (int i = 0; i < SCOPE_SAMPLES; i++) {
+    snap[i] = (int16_t)(sinf(phase) * 28000.0f);
+    phase += 2.0f * 3.14159f * 440.0f / 44100.0f;
+    if (phase > 2.0f * 3.14159f) phase -= 2.0f * 3.14159f;
+}
  
     // ── 3. Clear canvas to black ─────────────────────────────────────────────
     lv_canvas_fill_bg(canvas, lv_color_black(), LV_OPA_COVER);
- 
+    lv_obj_invalidate(canvas);   // <-- add this one line
+
     // ── 4. Draw grid ─────────────────────────────────────────────────────────
     lv_draw_line_dsc_t grid_dsc;
     lv_draw_line_dsc_init(&grid_dsc);
